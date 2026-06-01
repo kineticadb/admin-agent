@@ -39,7 +39,7 @@ chore: bump tsup to v8
 - **Discriminated unions** — `ToolResult<T>` with `ok: true/false`, not exceptions
 - **Graceful degradation** — return `undefined` or fallback on error, never throw from tools
 - **Co-located tests** — every `foo.ts` has a sibling `foo.test.ts`
-- **Linting and formatting** — `npm run lint` (ESLint with typescript-eslint) and `npm run format` (Prettier). Both run locally; not wired to CI.
+- **Linting and formatting** — `npm run lint` (ESLint with typescript-eslint) and `npm run format` (Prettier; `npm run format:check` for a read-only check). A dedicated CI `lint` job runs `npm run lint` and `npm run format:check` on every PR, so run them locally before pushing.
 
 ## Adding Tools
 

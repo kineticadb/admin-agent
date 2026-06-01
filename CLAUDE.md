@@ -57,7 +57,7 @@ npm run format          # Prettier — format all supported files
 npm run format:check    # Prettier — check formatting without writing
 ```
 
-CI (`.github/workflows/ci.yml`) runs `typecheck`, `test`, and `build` on Node 20.x and 22.x for every PR and push to `main`. ESLint and Prettier are local-only (not wired to CI or `prepublishOnly`) — run them before opening a PR.
+CI (`.github/workflows/ci.yml`) runs `typecheck`, `test`, and `build` on Node 20.x and 22.x for every PR and push to `main`. A separate `lint` job runs `npm run lint` (ESLint) and `npm run format:check` (Prettier) once on Node 20.x. Neither ESLint nor Prettier is wired into `prepublishOnly` — but both gate every PR via CI, so run `npm run lint` and `npm run format:check` (or `npm run format` to auto-fix) before opening a PR.
 
 ## Architecture
 
