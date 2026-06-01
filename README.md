@@ -435,7 +435,7 @@ reports/        # Generated diagnostic reports (git-ignored)
 
 Tests are co-located: every `*.ts` source file has a sibling `*.test.ts` in the same directory.
 
-CI (`.github/workflows/ci.yml`) runs type-check, test, and bundle build against Node 20.x and 22.x on every pull request and push to `main`. Linting via ESLint + typescript-eslint and formatting via Prettier (`npm run lint`, `npm run format`) are **not** wired to CI — contributors are expected to run them locally before opening a PR.
+CI (`.github/workflows/ci.yml`) runs type-check, test, and bundle build against Node 20.x and 22.x on every pull request and push to `main`. A separate `lint` job runs linting via ESLint + typescript-eslint (`npm run lint`) and formatting checks via Prettier (`npm run format:check`) once on Node 20.x — both gate every PR. Run them locally (or `npm run format` to auto-fix) before opening a PR.
 
 ### Architecture
 
