@@ -1,0 +1,484 @@
+# Kinetica Admin Agent
+
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
+
+AI-powered diagnostic agent for [Kinetica](https://www.kinetica.com/) GPU databases. Connects to a live instance, autonomously investigates issues using 22 tools, and produces structured markdown reports with evidence-backed findings and actionable remediation.
+
+Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk).
+
+## Table of Contents
+
+- [🚀 Quick Start](#quick-start)
+- [🔍 How It Works](#how-it-works)
+  - [📄 Example Report Output](#example-report-output)
+- [📋 Prerequisites](#prerequisites)
+- [⚙️ Configuration](#configuration)
+  - [🔑 Authentication](#authentication)
+  - [💰 Session Budget](#session-budget)
+  - [⚠️ Degraded Mode](#degraded-mode)
+- [🖥️ CLI Flags](#cli-flags)
+- [🧰 Tools](#tools)
+  - [💓 System Health & Monitoring](#system-health--monitoring)
+  - [📊 Resource & Performance](#resource--performance)
+  - [📝 Configuration & Logs](#configuration--logs)
+  - [🛡️ Data & Security](#data--security)
+  - [🗃️ SQL Execution (read-only)](#sql-execution-read-only)
+  - [✏️ Administrative Mutations (require approval)](#administrative-mutations-require-approval)
+  - [🔀 Batch Column Alter (self-approving)](#batch-column-alter-self-approving)
+  - [📑 Reporting](#reporting)
+- [🔒 Security](#security)
+- [📚 Contributing Diagnostic Knowledge](#contributing-diagnostic-knowledge)
+  - [📖 Adding a Playbook](#adding-a-playbook)
+  - [📘 Adding a Reference](#adding-a-reference)
+  - [🧠 Current Knowledge](#current-knowledge)
+- [🛠️ Development](#development)
+  - [💻 Commands](#commands)
+  - [🧪 Evals](#evals)
+  - [📂 Project Structure](#project-structure)
+  - [🏗️ Architecture](#architecture)
+- [🤝 Contributing](#contributing)
+- [🌐 Global Install](#global-install)
+- [🔧 Troubleshooting](#troubleshooting)
+- [📜 License](#license)
+
+**Key capabilities:**
+
+- Autonomous multi-round investigation with parallel tool calls
+- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 tools total**
+- Expert knowledge via pluggable playbooks (no code required to add new ones)
+- Schema-aware SQL — discovers actual column names at startup, never guesses
+- HTTPS-first URL resolution with explicit consent required before any HTTP fallback
+- Credential scrubbing on all saved reports
+- Degraded mode — useful diagnostics even when the DB engine is down
+
+## Quick Start
+
+Run straight from GitHub (primary install path until the npm package ships):
+
+```bash
+npx github:kineticadb/admin-agent
+```
+
+Once published to npm (coming post-v1.0), you'll also be able to:
+
+```bash
+npx @kineticadb/admin-agent
+# or globally: npm install -g @kineticadb/admin-agent && admin-agent
+```
+
+The agent loads connection details from `.env` if present, or prompts interactively. On repeat runs, it confirms the saved connection before proceeding.
+
+> To run locally from source instead, see [Development](#development).
+
+## How It Works
+
+The agent follows a structured **5-round investigation protocol**:
+
+```
+Round 1 — Initial Sweep
+  Health check, metrics, logs, host manager status (parallel)
+
+Round 2 — Targeted Deep Dive
+  Follow anomalies from Round 1 (SQL queries, config checks, table details)
+
+Round 3 — Correlation & Root Cause
+  Cross-reference evidence, test hypotheses, fill gaps
+
+Round 4 — Remediation (requires approval)
+  Apply fixes: config changes, CREATE INDEX, ALTER TABLE, rebalance
+
+Round 5 — Verification
+  Confirm mutations took effect, document before/after state
+```
+
+Each round uses multiple tools in parallel where possible. The agent names specific hypotheses, ties every conclusion to evidence, and never gives vague or generic advice.
+
+### Example Report Output
+
+After investigation, the agent produces a structured markdown report saved to `reports/`:
+
+```
+reports/kinetica-diag-2026-03-26-040414.md
+```
+
+<details>
+<summary>Example report excerpt</summary>
+
+```markdown
+# Kinetica Diagnostic Report
+
+| Field                             | Value                   |
+| --------------------------------- | ----------------------- |
+| **Investigation Date/Time (UTC)** | 2026-03-26 00:00:00 UTC |
+| **Kinetica Version**              | 7.2.3.11.20260322135954 |
+| **Tool Calls**                    | 11                      |
+| **Rounds**                        | 5                       |
+
+## Summary
+
+`ki_home.taxi_data_historical` (478,843 rows, 52.97 MB) had no DICT encoding
+on any of its 19 columns and no indexes. Five low-cardinality columns were
+wasting ~28.7 MB as raw storage. Both issues have been remediated.
+
+## Remediation
+
+1. **DICT encoding applied** to 5 columns in a single batch ALTER TABLE
+2. **Column index created** on `pickup_datetime`
+3. **Manual review recommended** for `cab_type` (cardinality=1)
+
+## Evidence Collected
+
+| Finding                  | Source                | Detail                                 |
+| ------------------------ | --------------------- | -------------------------------------- |
+| 0 DICT-encoded columns   | `kinetica_show_table` | All 19 columns showed no properties    |
+| store_and_fwd_flag waste | `ki_columns`          | 15.8 MB on disk, cardinality=5, char32 |
+| Combined DICT savings    | `ki_columns`          | 5 columns = 28.7 MB uncompressed       |
+
+## Mutations Applied
+
+| Tool                            | Parameters                      | Approval | Verified  |
+| ------------------------------- | ------------------------------- | -------- | --------- |
+| `kinetica_alter_table_columns`  | DICT on 5 columns               | APPROVED | confirmed |
+| `kinetica_execute_mutation_sql` | CREATE INDEX on pickup_datetime | APPROVED | confirmed |
+```
+
+</details>
+
+## Prerequisites
+
+- **Node.js 20+**
+- **Kinetica 7.2.x or later** — network-accessible URL (default port 9191)
+- **Anthropic API key** or **OAuth login** (Claude Pro/Max or Console account)
+
+## Configuration
+
+Set environment variables or use a `.env` file. The agent loads `.env` automatically at startup (shell-set variables always take precedence). Any missing values are prompted interactively.
+
+| Variable              | Description                                                                                 | Required                                        |
+| --------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `ANTHROPIC_API_KEY`   | Anthropic API key for Claude                                                                | No — OAuth login used if unset                  |
+| `KINETICA_URL`        | Kinetica instance URL (e.g. `http://host:9191` or bare `host:9191`)                         | Prompted if unset                               |
+| `KINETICA_USER`       | Kinetica username                                                                           | Prompted if unset                               |
+| `KINETICA_PASS`       | Kinetica password                                                                           | Prompted if unset (masked, never saved to .env) |
+| `KINETICA_HTTPS_ONLY` | Set to `1` to refuse plaintext HTTP fallback entirely — strict mode for production clusters | No                                              |
+| `DEBUG`               | Set to `1` to log HTTP requests and the assembled system-prompt token size to stderr        | No                                              |
+
+```bash
+cp .env.example .env   # fill in values — or let the agent create it for you
+```
+
+On first interactive connection, the agent offers to save `KINETICA_URL` and `KINETICA_USER` to `.env` (password is never saved). On subsequent runs with saved values, the agent shows the saved connection and asks to confirm before proceeding.
+
+If you enter a URL without a protocol (e.g., `host:9191`), the agent auto-detects by probing HTTPS first. If HTTPS fails and HTTP succeeds, the agent displays a red warning (credentials would travel in cleartext) and asks for explicit y/n confirmation before falling back. Set `KINETICA_HTTPS_ONLY=1` to refuse the fallback outright — recommended for production. In non-interactive environments (CI, piped input), the fallback is always refused; pass an explicit `http://` prefix if you really want HTTP. On authentication failure (401/403), the agent offers to re-enter credentials instead of retrying with the same values.
+
+### Authentication
+
+Anthropic authentication runs **before** Kinetica credential collection — the agent verifies it can reach the Claude API first, then asks for database credentials.
+
+The agent supports two Anthropic authentication methods:
+
+1. **API key** — set `ANTHROPIC_API_KEY` in environment or `.env` file. Get one at [console.anthropic.com](https://console.anthropic.com/).
+2. **OAuth login** — if no API key is set, the agent opens a browser for Anthropic OAuth login (same flow as `claude login`). OAuth tokens are cached across sessions — subsequent runs reuse the cached credentials without reopening the browser. Use `--login` to force a fresh OAuth login, or `--logout` to clear cached credentials.
+
+In non-interactive environments (CI, Docker without `-it`, piped input), an `ANTHROPIC_API_KEY` is required — OAuth needs a browser and will fail immediately with a clear error.
+
+```bash
+# API key (traditional)
+ANTHROPIC_API_KEY=sk-... npm run dev
+
+# OAuth login (opens browser on first run, reuses cached token after)
+npm run dev
+
+# Force OAuth login (ignore existing API key or cached token)
+npm run dev -- --login
+
+# OAuth with Console billing (instead of Claude Pro/Max)
+npm run dev -- --login --login-method=console
+
+# Log out (clear cached OAuth credentials)
+npm run dev -- --logout
+```
+
+### Session Budget
+
+Each session enforces a **$5.00 maximum API cost**. The agent reports actual spend in the session summary on exit.
+
+### Degraded Mode
+
+If the DB engine on port 9191 is unreachable after 3 retries, the agent probes the host manager on port 9300. If it responds, the agent starts in **degraded mode** — only `kinetica_host_manager_status` provides useful data (version, license, per-rank process status). If both ports are unreachable, the agent exits with code 1.
+
+## CLI Flags
+
+```bash
+admin-agent --help                # Show usage
+admin-agent --version             # Print version
+admin-agent --verbose             # Enable debug logging (stack traces on error)
+admin-agent --login               # Force OAuth login (even if API key is set)
+admin-agent --login-method=TYPE   # Login method: claudeai (Pro/Max) or console
+admin-agent --login-org=UUID      # Target organization UUID for OAuth
+admin-agent --logout              # Log out from Anthropic account and exit
+admin-agent --model=NAME          # Override agent model (sonnet | haiku | opus); default: sonnet
+```
+
+The `--model` flag swaps the primary model for a single session. `haiku` is cheaper and faster for simple triage; `opus` is slower and more expensive but produces deeper reasoning on complex investigations. The fallback model remains `haiku` regardless of the primary choice, so availability is unchanged.
+
+## Tools
+
+22 tools organized into categories. Diagnostic and SQL tools execute without approval. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow.
+
+### System Health & Monitoring
+
+| Tool                           | Description                                                             |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| `kinetica_health_check`        | 11-component health status: system, ranks, hosts, HTTP server, HA, etc. |
+| `kinetica_cluster_status`      | Rebalance progress, shard distribution, alerts, active async jobs       |
+| `kinetica_verify_db`           | Database integrity: null checks, persistence issues, orphaned tables    |
+| `kinetica_system_timing`       | Last ~100 API calls with endpoint name and response time (ms)           |
+| `kinetica_host_manager_status` | Host manager cluster status, per-rank process info (no auth required)   |
+
+### Resource & Performance
+
+| Tool                        | Description                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `kinetica_get_metrics`      | Per-rank storage tier summary: RAM/persist/disk/VRAM used and limits            |
+| `kinetica_node_details`     | Detailed per-rank breakdown: per-tier limits/usage, per-resource-group threads  |
+| `kinetica_resource_groups`  | Resource group definitions: memory limits, CPU concurrency, scheduling priority |
+| `kinetica_resource_objects` | Per-rank object placement: sizes, tier, priority, eviction stats, lock status   |
+
+### Configuration & Logs
+
+| Tool                             | Description                                                                |
+| -------------------------------- | -------------------------------------------------------------------------- |
+| `kinetica_get_system_properties` | 260+ runtime config properties with optional category/key filtering        |
+| `kinetica_show_configuration`    | Full `gpudb.conf` from host manager (port 9300)                            |
+| `kinetica_get_logs`              | Application logs by source/severity/time range (_7.2.x: use SQL fallback_) |
+
+### Data & Security
+
+| Tool                     | Description                                                         |
+| ------------------------ | ------------------------------------------------------------------- |
+| `kinetica_show_table`    | Column names, Kinetica-native types, per-column properties, indexes |
+| `kinetica_show_security` | Users, roles, permissions, resource group assignments               |
+
+### SQL Execution (read-only)
+
+| Tool                     | Description                                                |
+| ------------------------ | ---------------------------------------------------------- |
+| `kinetica_execute_sql`   | SELECT/WITH queries against system catalog tables          |
+| `kinetica_explain_query` | Execution plan: step IDs, internal endpoints, dependencies |
+
+### Administrative Mutations (require approval)
+
+| Tool                               | Description                                                              |
+| ---------------------------------- | ------------------------------------------------------------------------ |
+| `kinetica_alter_system_properties` | Runtime config changes with before/after verification                    |
+| `kinetica_execute_mutation_sql`    | DDL/DML (CREATE INDEX, ALTER TABLE, etc.) — DROP/TRUNCATE/DELETE blocked |
+| `kinetica_admin_rebalance`         | Shard rebalancing with aggressiveness cap and before/after capture       |
+| `kinetica_alter_configuration`     | Replace `gpudb.conf` with before/after verification                      |
+
+### Batch Column Alter (self-approving)
+
+| Tool                           | Description                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `kinetica_alter_table_columns` | Batch 2+ column changes into one ALTER TABLE. Two-step approval: interactive checklist then SQL preview |
+
+### Reporting
+
+| Tool          | Description                                                         |
+| ------------- | ------------------------------------------------------------------- |
+| `save_report` | Timestamped markdown report to `reports/` with credential scrubbing |
+
+## Security
+
+The agent is designed with defense-in-depth for database administration:
+
+- **Credential isolation** — Kinetica credentials are captured in a closure and never exposed to the agent or logged
+- **HTTPS enforcement** — URL resolution probes HTTPS first; any fallback to plaintext HTTP requires explicit interactive confirmation, is refused in non-interactive environments, and can be disabled entirely via `KINETICA_HTTPS_ONLY=1`
+- **Read-only by default** — 16 read-only diagnostic tools (including SQL execute/explain) run without approval; the agent has no access to `Bash`, `Edit`, `Write`, or `MultiEdit` and cannot run arbitrary shell commands
+- **Mutation approval gate** — the 4 administrative mutation tools each trigger an interactive y/n/explain prompt before execution; DROP/TRUNCATE/DELETE/UPDATE SQL is always blocked (with CTE-bypass protection)
+- **Two-step approval for batch column alter** — `kinetica_alter_table_columns` requires the operator to select columns via a checklist, then confirm the exact SQL preview
+- **Audit trail** — every mutation logs a redacted audit line to stderr (EXECUTED/FAILED + fingerprinted input summary) and appears in the report's "Mutations Applied" table with before/after state
+- **Report scrubbing** — saved reports are scrubbed of URLs, auth headers, Basic/Bearer credentials, cookies, and passwords before writing to disk
+- **Budget cap** — $5.00 max API cost per session prevents runaway spend
+
+To report a security vulnerability, please see [SECURITY.md](SECURITY.md). Do not open a public GitHub issue for security issues.
+
+## Contributing Diagnostic Knowledge
+
+The agent's expert troubleshooting knowledge lives in `knowledge/` as Markdown files — no TypeScript required.
+
+### Adding a Playbook
+
+Playbooks are diagnostic runbooks in `knowledge/playbooks/`. Create a new `.md` file:
+
+```markdown
+---
+title: Shard Imbalance
+category: cluster
+severity: warning
+keywords: [shard, imbalance, skew, distribution]
+---
+
+## Symptoms
+
+- Uneven query response times across ranks
+- One rank consistently at higher CPU/memory than others
+
+## Detection
+
+- `kinetica_get_metrics` -> compare `ram_percent` across worker ranks
+- `kinetica_cluster_status` -> check shard distribution
+
+## Root Cause
+
+Data skew from poor shard key choice or post-rebalance drift.
+
+## Remediation
+
+1. Check shard key distribution via `kinetica_execute_sql`
+2. Use `kinetica_admin_rebalance` with aggressiveness 1-3
+```
+
+| Field      | Required | Description                                                |
+| ---------- | -------- | ---------------------------------------------------------- |
+| `title`    | Yes      | Pattern name shown in agent's diagnostic knowledge         |
+| `category` | No       | Grouping (e.g., `performance`, `cluster`, `configuration`) |
+| `severity` | No       | `critical`, `warning`, or `info` (default: `info`)         |
+| `keywords` | No       | Search terms: `[term1, term2]`                             |
+
+Playbooks are loaded automatically at startup — no build step needed.
+
+### Adding a Reference
+
+References provide domain knowledge (not diagnostic runbooks). Create a `.md` file in `knowledge/references/` with the same frontmatter format but without `severity`.
+
+### Current Knowledge
+
+**Playbooks** (6): memory-pressure, gpu-out-of-memory, query-contention, resource-group-exhaustion, stale-rank, config-drift
+
+**References** (9):
+
+- `gpudb-conf` — master config file structure, section index, tiered storage semantics
+- `tiered-objects` — `ki_tiered_objects` schema, ID format, diagnostic queries
+- `catalog-enums` — enum value decoders for `ki_catalog` integer columns
+- `catalog-joins` — safe join paths between `ki_catalog` tables (oid compatibility, naming caveats)
+- `rank-architecture` — rank 0 vs worker ranks, head-node resource profile, shard ownership model
+- `mutation-safety` — pre-execution checklist for rebalance, alter-config, and DDL paths
+- `sql-alter-table` — Kinetica 7.2 ALTER TABLE grammar, column property flags, shard-key immutability
+- `sql-create-index` — column index syntax, chunk skip index, when to use which
+- `version-quirks-7.2` — endpoint/property differences between 7.2.x and earlier releases
+
+> **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~15,000 estimated tokens. Current baseline is ~13.4k tokens (6 playbooks + 9 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
+
+## Development
+
+```bash
+git clone https://github.com/kineticadb/admin-agent.git
+cd admin-agent
+npm install
+cp .env.example .env   # optional — all values are prompted on first run (OAuth login opens in browser if no API key)
+```
+
+### Commands
+
+| Command                    | Description                                      |
+| -------------------------- | ------------------------------------------------ |
+| `npm run dev`              | Run from source via tsx                          |
+| `npm run dev -- --verbose` | Run with debug logging                           |
+| `npm run build`            | Bundle with tsup -> `dist/admin-agent.js`        |
+| `npm run typecheck`        | Type-check without emitting                      |
+| `npm test`                 | Run all tests (vitest)                           |
+| `npm run test:watch`       | Tests in watch mode                              |
+| `npm run test:coverage`    | Coverage report (80% line threshold)             |
+| `npm run eval`             | Run the report-format eval against the real API  |
+| `npm run lint`             | Run ESLint (typescript-eslint, type-aware rules) |
+| `npm run lint:fix`         | Run ESLint and auto-fix what it can              |
+| `npm run format`           | Run Prettier to format all supported files       |
+| `npm run format:check`     | Run Prettier in check-only mode (no writes)      |
+
+Run a single test file:
+
+```bash
+npx vitest run src/agent/turn-gate.test.ts
+```
+
+### Evals
+
+Unit tests in `src/**/*.test.ts` verify the inputs to the model (system prompt, template files, tool catalog). Evals under `src/evals/` verify the outputs — they run the full agent loop against a mocked Kinetica session and assert the model's generated report conforms to the template. Evals are deliberately **not** part of `npm test` (they hit the real Anthropic API, cost money, and are non-deterministic).
+
+```bash
+# Requires ANTHROPIC_API_KEY (or a prior OAuth login)
+npm run eval
+```
+
+Exit codes: `0` pass, `1` assertion failed, `2` harness failure (e.g., missing API key). See [`src/evals/README.md`](src/evals/README.md) for the design rationale and how to add new evals.
+
+### Project Structure
+
+```
+src/
+  cli/          # Entry point, banner, arg parsing
+  agent/        # Agent loop, system prompt, schema discovery
+  session/      # Kinetica connection, credentials, .env management, URL resolution
+  tools/        # 22 MCP tools (rest/, sql/, mutation/)
+  output/       # Formatting, truncation, table alignment
+  approval/     # Mutation approval gate and checklist UI
+  report/       # Report generation and credential scrubbing
+  evals/        # Model-output eval harness (separate from unit tests)
+  types/        # Shared type contracts
+knowledge/
+  playbooks/    # Diagnostic runbooks (Markdown + YAML frontmatter)
+  references/   # Domain knowledge documents
+reports/        # Generated diagnostic reports (git-ignored)
+```
+
+Tests are co-located: every `*.ts` source file has a sibling `*.test.ts` in the same directory.
+
+CI (`.github/workflows/ci.yml`) runs type-check, test, and bundle build against Node 20.x and 22.x on every pull request and push to `main`. Linting via ESLint + typescript-eslint and formatting via Prettier (`npm run lint`, `npm run format`) are **not** wired to CI — contributors are expected to run them locally before opening a PR.
+
+### Architecture
+
+For a detailed architecture reference (startup flow, tool internals, output pipeline, type contracts, API quirks), see [CLAUDE.md](CLAUDE.md).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, commit conventions, code style, and how to add new tools.
+
+## Global Install
+
+Once the npm package is published (coming post-v1.0):
+
+```bash
+npm install -g @kineticadb/admin-agent
+admin-agent
+```
+
+## Troubleshooting
+
+**Agent can't connect to Kinetica**
+
+- Verify the URL is reachable: `curl http://host:9191/show/system/status`
+- Check firewall rules for ports 9191 (DB engine) and 9300 (host manager)
+- If only port 9300 responds, the agent will start in [degraded mode](#degraded-mode)
+
+**"Unknown URI" errors from tools**
+
+- Some endpoints (e.g., `/admin/show/logs`) don't exist in Kinetica 7.2.x — the agent falls back to SQL queries automatically
+
+**Agent hits budget cap**
+
+- Default is $5.00 per session. For complex multi-table investigations, consider running focused sessions per table
+
+**Empty or missing report**
+
+- Reports save to `reports/` in the working directory. If the session is interrupted, a partial report may be saved with a `(partial)` flag
+
+**Agent refuses HTTP connection**
+
+- If HTTPS probing fails and you want to allow HTTP, pass an explicit `http://` prefix in `KINETICA_URL` (not just a bare hostname)
+- Production deployments should keep `KINETICA_HTTPS_ONLY=1` set to prevent any plaintext credential transmission
+
+## License
+
+[Apache-2.0](LICENSE)

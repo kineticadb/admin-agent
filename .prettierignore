@@ -1,0 +1,8 @@
+dist/
+coverage/
+node_modules/
+reports/
+package-lock.json
+*.tsbuildinfo
+.env
+.env.local

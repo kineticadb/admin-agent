@@ -1,0 +1,76 @@
+{
+  "name": "@kineticadb/admin-agent",
+  "version": "0.1.0",
+  "description": "Autonomous diagnostic agent for Kinetica databases",
+  "license": "Apache-2.0",
+  "author": "Kinetica",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kineticadb/admin-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kineticadb/admin-agent/issues"
+  },
+  "homepage": "https://github.com/kineticadb/admin-agent#readme",
+  "keywords": [
+    "kinetica",
+    "database",
+    "diagnostics",
+    "agent",
+    "dba",
+    "ai-agent",
+    "claude"
+  ],
+  "engines": {
+    "node": ">=20.20"
+  },
+  "files": [
+    "dist/",
+    "knowledge/",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "bin": {
+    "admin-agent": "./dist/admin-agent.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "postbuild": "chmod +x dist/admin-agent.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dev": "tsx src/cli/index.ts",
+    "eval": "tsx src/evals/report-format.eval.ts",
+    "eval:report-format": "tsx src/evals/report-format.eval.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "~0.2.80",
+    "@inquirer/prompts": "^8.3.0",
+    "picocolors": "^1.1.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.3.3",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^10.2.1",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.5.0",
+    "prettier": "^3.8.3",
+    "tsup": "^8.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.59.0",
+    "vitest": "^4.0.18"
+  }
+}
