@@ -54,17 +54,23 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
 
 ## Quick Start
 
-Run straight from GitHub (primary install path until the npm package ships):
+Run the latest published release straight from npm — no clone, no build:
+
+```bash
+npx @kinetica/admin-agent
+```
+
+Or install it globally and run the `admin-agent` command anywhere:
+
+```bash
+npm install -g @kinetica/admin-agent
+admin-agent
+```
+
+To run the latest unreleased code from the default branch instead, point `npx` at GitHub:
 
 ```bash
 npx github:kineticadb/admin-agent
-```
-
-Once published to npm (coming post-v1.0), you'll also be able to:
-
-```bash
-npx @kineticadb/admin-agent
-# or globally: npm install -g @kineticadb/admin-agent && admin-agent
 ```
 
 The agent loads connection details from `.env` if present, or prompts interactively. On repeat runs, it confirms the saved connection before proceeding.
@@ -447,10 +453,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, commit
 
 ## Global Install
 
-Once the npm package is published (coming post-v1.0):
-
 ```bash
-npm install -g @kineticadb/admin-agent
+npm install -g @kinetica/admin-agent
 admin-agent
 ```
 
