@@ -66,6 +66,16 @@ vi.mock("../agent/run-agent.js", () => ({
   DEFAULT_AGENT_MODEL: "sonnet" as const,
 }));
 
+// Mock the interactive model picker BEFORE importing main — vi.mock is hoisted.
+// Lets the wiring tests assert when the picker is (and isn't) invoked without
+// triggering a real terminal prompt.
+const { mockSelectModel } = vi.hoisted(() => ({
+  mockSelectModel: vi.fn().mockResolvedValue("opus"),
+}));
+vi.mock("./select-model.js", () => ({
+  selectModel: mockSelectModel,
+}));
+
 // Import main and the mocked modules after mocks are set up
 import { main } from "./index.js";
 import { connectWithRetry } from "../session/verify.js";
@@ -73,6 +83,7 @@ import { runAgent } from "../agent/run-agent.js";
 
 describe("main", () => {
   let originalArgv: string[];
+  let originalIsTTY: boolean | undefined;
   let stdoutOutput: string[];
   let stderrOutput: string[];
   let mockExit: ReturnType<typeof vi.fn>;
@@ -83,6 +94,11 @@ describe("main", () => {
     // Store and reset argv to prevent --help/--version flags from affecting tests
     originalArgv = process.argv;
     process.argv = ["node", "admin-agent"];
+
+    // Default to non-interactive so the model picker branch stays off unless a
+    // test explicitly opts in — otherwise a stray TTY would hang on a prompt.
+    originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
 
     // Capture stdout/stderr
     stdoutOutput = [];
@@ -105,6 +121,7 @@ describe("main", () => {
 
   afterEach(() => {
     process.argv = originalArgv;
+    Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
     vi.restoreAllMocks();
   });
 
@@ -142,6 +159,38 @@ describe("main", () => {
     await main();
     const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
     expect(call[3]).toBe("opus");
+  });
+
+  // Interactive model picker — shown only when interactive AND no --model flag
+  it("prompts for model via selectModel when interactive and no --model flag", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    mockSelectModel.mockResolvedValue("opus");
+
+    await main();
+
+    expect(mockSelectModel).toHaveBeenCalledOnce();
+    const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(call[3]).toBe("opus");
+  });
+
+  it("does not prompt for model when --model flag is supplied, even if interactive", async () => {
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    process.argv = ["node", "admin-agent", "--model=haiku"];
+
+    await main();
+
+    expect(mockSelectModel).not.toHaveBeenCalled();
+    const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(call[3]).toBe("haiku");
+  });
+
+  it("does not prompt for model when terminal is non-interactive", async () => {
+    // isTTY is pinned to false by beforeEach
+    await main();
+
+    expect(mockSelectModel).not.toHaveBeenCalled();
+    const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(call[3]).toBeUndefined();
   });
 
   // --model flag — invalid value exits before connecting

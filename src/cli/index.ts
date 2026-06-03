@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import { printBanner } from "./banner.js";
+import { selectModel } from "./select-model.js";
 import { getVersion } from "./version.js";
 import { authenticateAnthropic } from "../auth/preflight.js";
 import { logout } from "../auth/logout.js";
@@ -93,11 +94,26 @@ export async function main(): Promise<void> {
   }
 
   loadEnvFile();
-  // Resolve the effective model here so the banner displays it directly
-  // beneath the version. runAgent re-applies the same `?? DEFAULT_AGENT_MODEL`
-  // for non-CLI callers, so the two sites never drift.
+
+  // Print the logo/version banner first — the model line is emitted below,
+  // after the operator has had a chance to pick one.
+  printBanner();
+
+  // When the operator didn't pin a model via --model and the terminal is
+  // interactive, let them choose for this session. The choice is deliberately
+  // not persisted — prompting fresh each interactive launch keeps the model
+  // easy to change. Non-interactive runs (CI, piped input) skip the prompt and
+  // fall back to DEFAULT_AGENT_MODEL, mirroring the precedence used for
+  // Kinetica credentials.
+  if (model === undefined && process.stdin.isTTY) {
+    model = await selectModel();
+  }
+
+  // Resolve the effective model once selection is settled. runAgent re-applies
+  // the same `?? DEFAULT_AGENT_MODEL` for non-CLI callers, so the two sites
+  // never drift.
   const effectiveModel: AgentModel = model ?? DEFAULT_AGENT_MODEL;
-  printBanner(effectiveModel);
+  process.stderr.write(pc.dim(`model: ${effectiveModel}\n`));
 
   // Authenticate with Anthropic BEFORE collecting Kinetica credentials.
   // Fail fast if no API key and OAuth is impossible (non-interactive terminal).
