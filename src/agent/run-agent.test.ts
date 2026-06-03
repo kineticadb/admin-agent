@@ -1246,6 +1246,62 @@ describe("runAgent", () => {
     expect(output).toContain("Permission denials: Bash, Edit");
   });
 
+  it("logs cache-token telemetry in DEBUG mode, summed across models", async () => {
+    const prevDebug = process.env.DEBUG;
+    process.env.DEBUG = "1";
+    try {
+      const session = makeSession();
+      mockQuery.mockReturnValue(
+        makeQueryResult([
+          makeResultMsg({
+            modelUsage: {
+              "claude-sonnet": { cacheReadInputTokens: 1000, cacheCreationInputTokens: 500 },
+              "claude-haiku": { cacheReadInputTokens: 234, cacheCreationInputTokens: 67 },
+            },
+          }),
+        ]),
+      );
+      await runAgent(session);
+      const output = stderrOutput.join("");
+      // 1000 + 234 read, 500 + 67 created — a non-zero read count confirms caching.
+      expect(output).toContain("cache: 1234 read / 567 created");
+    } finally {
+      if (prevDebug === undefined) delete process.env.DEBUG;
+      else process.env.DEBUG = prevDebug;
+    }
+  });
+
+  it("omits cache telemetry when DEBUG is unset even if cache reads occurred", async () => {
+    const prevDebug = process.env.DEBUG;
+    delete process.env.DEBUG;
+    try {
+      const session = makeSession();
+      mockQuery.mockReturnValue(
+        makeQueryResult([
+          makeResultMsg({
+            modelUsage: {
+              "claude-sonnet": { cacheReadInputTokens: 1000, cacheCreationInputTokens: 500 },
+            },
+          }),
+        ]),
+      );
+      await runAgent(session);
+      const output = stderrOutput.join("");
+      expect(output).not.toContain("cache:");
+    } finally {
+      if (prevDebug === undefined) delete process.env.DEBUG;
+      else process.env.DEBUG = prevDebug;
+    }
+  });
+
+  it("does not throw and still writes the summary when modelUsage is absent", async () => {
+    const session = makeSession();
+    // makeResultMsg omits modelUsage by default — the guard must degrade to zero tokens.
+    mockQuery.mockReturnValue(makeQueryResult([makeResultMsg({ num_turns: 7 })]));
+    await expect(runAgent(session)).resolves.not.toThrow();
+    expect(stderrOutput.join("")).toContain("Turns: 7");
+  });
+
   it("does not log permission denials when none occurred", async () => {
     const session = makeSession();
     mockQuery.mockReturnValue(makeQueryResult([makeResultMsg({ permission_denials: [] })]));

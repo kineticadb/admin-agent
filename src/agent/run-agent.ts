@@ -298,7 +298,7 @@ export async function runAgent(
   // Token-budget tripwire: the whole knowledge corpus is front-loaded into the
   // system prompt, so its cost grows with the corpus. Surface the size (DEBUG only)
   // and warn unconditionally if it crosses the threshold — a cue to add keyword-based
-  // playbook selection before the prompt gets expensive. See IMPROVEMENTS.md item 1.
+  // playbook selection before the prompt gets expensive.
   const budget = checkPromptBudget(systemPrompt);
   if (process.env.DEBUG) {
     process.stderr.write(
@@ -408,6 +408,10 @@ export async function runAgent(
   let totalCostUsd = 0;
   let durationMs = 0;
   let durationApiMs = 0;
+  // Cache-token telemetry — confirms the SDK is reusing the static system prompt across
+  // turns rather than re-billing the full knowledge corpus each turn.
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let lastStreamCharWasNewline = true;
 
   // Line-buffering adapter: buffers markdown table blocks for alignment,
@@ -479,6 +483,16 @@ export async function runAgent(
         totalCostUsd = resultMsg.total_cost_usd;
         durationMs = resultMsg.duration_ms;
         durationApiMs = resultMsg.duration_api_ms;
+
+        // Sum cache tokens from per-model usage. Deliberately NOT the top-level
+        // resultMsg.usage: its BetaUsage-derived fields resolve to `any` here (tripping
+        // no-unsafe-assignment), whereas ModelUsage declares these as concrete `number`,
+        // keeping this read type-safe. A non-zero cacheReadTokens proves the system prompt
+        // is served from cache. Guard the field: it crosses a process boundary, so
+        // telemetry must never break the session.
+        const usages = Object.values(resultMsg.modelUsage ?? {});
+        cacheReadTokens = usages.reduce((sum, u) => sum + (u.cacheReadInputTokens ?? 0), 0);
+        cacheCreationTokens = usages.reduce((sum, u) => sum + (u.cacheCreationInputTokens ?? 0), 0);
 
         if (resultMsg.subtype === "error_max_turns") {
           process.stderr.write(
@@ -582,6 +596,16 @@ export async function runAgent(
     const durationSec = Math.round(durationMs / 1000);
     const apiPct = durationMs > 0 ? Math.round((durationApiMs / durationMs) * 100) : 0;
     const costStr = totalCostUsd > 0 ? ` Cost: $${totalCostUsd.toFixed(4)}.` : "";
+    // Verify the static system prompt is cached: cacheReadTokens > 0 means it was reused
+    // across turns (re-read at ~10% input cost) instead of re-billed in full each turn.
+    if (process.env.DEBUG && (cacheReadTokens > 0 || cacheCreationTokens > 0)) {
+      process.stderr.write(
+        pc.dim(
+          `cache: ${cacheReadTokens} read / ${cacheCreationTokens} created input tokens` +
+            ` (read > 0 confirms the system prompt is served from cache)\n`,
+        ),
+      );
+    }
     if (hadNonAbortError) {
       process.stderr.write(`\nSession ended due to error. Turns: ${numTurns}.${costStr}\n`);
     } else {
