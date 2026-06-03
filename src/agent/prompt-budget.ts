@@ -27,10 +27,16 @@ const CHARS_PER_TOKEN = 4;
 
 /**
  * Default threshold (in estimated tokens) above which the assembled system prompt is
- * considered expensive enough to warn about. Chosen as a tripwire, not a hard limit —
- * the current corpus sits well under this; it leaves headroom for growth.
+ * considered expensive enough to warn about. Chosen as a tripwire, not a hard limit.
+ *
+ * Raised 15_000 → 20_000 (2026-06-03). The measured baseline is ~13,422 tokens, and the
+ * system prompt is *cached* by the Agent SDK (written once at startup, re-read on every
+ * turn — see the cache-token telemetry in run-agent.ts), so the marginal cost of the
+ * corpus is near-zero. The earlier 15_000 left only ~10% headroom and fired as a false
+ * alarm well before any real cost concern. 20_000 keeps the tripwire meaningful (it still
+ * catches roughly a 50% corpus growth) without crying wolf.
  */
-export const DEFAULT_PROMPT_BUDGET_TOKENS = 15_000;
+export const DEFAULT_PROMPT_BUDGET_TOKENS = 20_000;
 
 /** Result of measuring a prompt against a budget threshold. Immutable. */
 export type BudgetReport = {

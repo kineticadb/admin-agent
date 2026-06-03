@@ -218,9 +218,9 @@ The entire knowledge corpus (all playbooks + all references + SQL examples + too
 
 - `estimateTokens(text)` — `chars / 4` heuristic, rounded up (a tripwire needs to be _present_, not _precise_; swap for a real tokenizer behind the same signature if exact counts ever matter)
 - `checkPromptBudget(prompt, opts?)` — returns an immutable `BudgetReport` (`tokens`, `chars`, `threshold`, `overBudget`); comparison is strictly-greater, so a prompt exactly at the threshold is not flagged
-- `DEFAULT_PROMPT_BUDGET_TOKENS = 15_000` — warn threshold (a tripwire, not a hard limit)
+- `DEFAULT_PROMPT_BUDGET_TOKENS = 20_000` — warn threshold (a tripwire, not a hard limit; raised from 15_000 on 2026-06-03 since the cached system prompt makes corpus token cost near-zero)
 
-Wired into `runAgent()` immediately after `buildSystemPrompt()`: a `DEBUG`-gated size line plus an **unconditional** over-budget warning to stderr cueing keyword-based playbook selection. Measured baseline (2026-05-31): the assembled prompt is **~13,422 tokens** with 6 playbooks + 9 references — ~10% under threshold. Planned knowledge-selection follow-ups are tracked in `IMPROVEMENTS.md`.
+Wired into `runAgent()` immediately after `buildSystemPrompt()`: a `DEBUG`-gated size line plus an **unconditional** over-budget warning to stderr cueing keyword-based playbook selection. Measured baseline (2026-05-31): the assembled prompt is **~13,422 tokens** with 6 playbooks + 9 references — ~33% under the 20,000 threshold. Note the system prompt is **cached** by the Agent SDK (built once at startup, re-read on every turn), so corpus token cost is near-zero in practice — `runAgent()` emits a `DEBUG`-gated cache-token line in the session summary (`cacheReadTokens > 0` confirms reuse).
 
 ### Credential Security
 
