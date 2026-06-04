@@ -161,14 +161,15 @@ wasting ~28.7 MB as raw storage. Both issues have been remediated.
 
 Set environment variables or use a `.env` file. The agent loads `.env` automatically at startup (shell-set variables always take precedence). Any missing values are prompted interactively.
 
-| Variable              | Description                                                                                 | Required                                        |
-| --------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `ANTHROPIC_API_KEY`   | Anthropic API key for Claude                                                                | No — OAuth login used if unset                  |
-| `KINETICA_URL`        | Kinetica instance URL (e.g. `http://host:9191` or bare `host:9191`)                         | Prompted if unset                               |
-| `KINETICA_USER`       | Kinetica username                                                                           | Prompted if unset                               |
-| `KINETICA_PASS`       | Kinetica password                                                                           | Prompted if unset (masked, never saved to .env) |
-| `KINETICA_HTTPS_ONLY` | Set to `1` to refuse plaintext HTTP fallback entirely — strict mode for production clusters | No                                              |
-| `DEBUG`               | Set to `1` to log HTTP requests and the assembled system-prompt token size to stderr        | No                                              |
+| Variable                 | Description                                                                                      | Required                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `ANTHROPIC_API_KEY`      | Anthropic API key for Claude                                                                     | No — OAuth login used if unset                  |
+| `ADMIN_AGENT_MAX_BUDGET` | Per-session budget cap in USD for API-key billing (overridden by `--max-budget`; default `5.00`) | No                                              |
+| `KINETICA_URL`           | Kinetica instance URL (e.g. `http://host:9191` or bare `host:9191`)                              | Prompted if unset                               |
+| `KINETICA_USER`          | Kinetica username                                                                                | Prompted if unset                               |
+| `KINETICA_PASS`          | Kinetica password                                                                                | Prompted if unset (masked, never saved to .env) |
+| `KINETICA_HTTPS_ONLY`    | Set to `1` to refuse plaintext HTTP fallback entirely — strict mode for production clusters      | No                                              |
+| `DEBUG`                  | Set to `1` to log HTTP requests and the assembled system-prompt token size to stderr             | No                                              |
 
 ```bash
 cp .env.example .env   # fill in values — or let the agent create it for you
@@ -208,7 +209,12 @@ npm run dev -- --logout
 
 ### Session Budget
 
-Each session enforces a **$5.00 maximum API cost**. The agent reports actual spend in the session summary on exit.
+Each session has a **budget guard** to prevent runaway spend. Its form depends on how you authenticate with Anthropic:
+
+- **API-key billing** — the session enforces a dollar cap (default **$5.00**). Raise it with the `--max-budget=<USD>` flag or the `ADMIN_AGENT_MAX_BUDGET` environment variable (the flag wins when both are set). When estimated spend crosses ~80% of the cap, the agent warns on stderr and is instructed to save a partial report and wind down. If the cap is reached, the session ends with a message showing how to re-run with more headroom — and any report saved up to that point remains in `reports/`.
+- **OAuth (Claude Pro/Max subscription)** — no dollar cap is imposed (you are not billed per token). The session is bounded by the **turn limit** (100 turns) instead.
+
+The active guard is printed at startup, and the session summary reports per-investigation and total spend (API-key billing only). The dollar cap is enforced precisely by the Claude Agent SDK; the ~80% warning is an estimate from per-turn token usage, so it is approximate by design.
 
 ### Degraded Mode
 
@@ -225,9 +231,12 @@ admin-agent --login-method=TYPE   # Login method: claudeai (Pro/Max) or console
 admin-agent --login-org=UUID      # Target organization UUID for OAuth
 admin-agent --logout              # Log out from Anthropic account and exit
 admin-agent --model=NAME          # Override agent model (sonnet | haiku | opus); default: sonnet
+admin-agent --max-budget=USD      # Per-session budget cap in USD (API-key billing only); default: 5.00
 ```
 
-The `--model` flag swaps the primary model for a single session. `haiku` is cheaper and faster for simple triage; `opus` is slower and more expensive but produces deeper reasoning on complex investigations. The fallback model remains `haiku` regardless of the primary choice, so availability is unchanged.
+The `--model` flag swaps the primary model for a single session. `haiku` is cheaper and faster for simple triage; `opus` is slower and more expensive but produces deeper reasoning on complex investigations. The fallback model remains `haiku` regardless of the primary choice, so availability is unchanged. When you omit `--model` in an interactive terminal, the agent shows a startup picker (defaulting to `sonnet`); non-interactive runs use the default without prompting.
+
+The `--max-budget` flag sets the per-session dollar cap for API-key billing (see [Session Budget](#session-budget)). It overrides `ADMIN_AGENT_MAX_BUDGET` and has no effect under OAuth subscription billing, which is turn-limited instead.
 
 ## Tools
 
@@ -306,7 +315,7 @@ The agent is designed with defense-in-depth for database administration:
 - **Two-step approval for batch column alter** — `kinetica_alter_table_columns` requires the operator to select columns via a checklist, then confirm the exact SQL preview
 - **Audit trail** — every mutation logs a redacted audit line to stderr (EXECUTED/FAILED + fingerprinted input summary) and appears in the report's "Mutations Applied" table with before/after state
 - **Report scrubbing** — saved reports are scrubbed of URLs, auth headers, Basic/Bearer credentials, cookies, and passwords before writing to disk
-- **Budget cap** — $5.00 max API cost per session prevents runaway spend
+- **Budget guard** — a per-session dollar cap (default $5.00, configurable via `--max-budget` or `ADMIN_AGENT_MAX_BUDGET`) prevents runaway spend on API-key billing; OAuth subscription sessions are bounded by the turn limit instead
 
 To report a security vulnerability, please see [SECURITY.md](SECURITY.md). Do not open a public GitHub issue for security issues.
 
@@ -375,7 +384,7 @@ References provide domain knowledge (not diagnostic runbooks). Create a `.md` fi
 - `sql-create-index` — column index syntax, chunk skip index, when to use which
 - `version-quirks-7.2` — endpoint/property differences between 7.2.x and earlier releases
 
-> **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~15,000 estimated tokens. Current baseline is ~13.4k tokens (6 playbooks + 9 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
+> **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~20,000 estimated tokens. Current baseline is ~13.4k tokens (6 playbooks + 9 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
 
 ## Development
 
@@ -472,7 +481,7 @@ admin-agent
 
 **Agent hits budget cap**
 
-- Default is $5.00 per session. For complex multi-table investigations, consider running focused sessions per table
+- Applies to API-key billing only (default $5.00 per session). Raise it for the next run with `--max-budget=10` or `export ADMIN_AGENT_MAX_BUDGET=10`. The agent warns at ~80% so it can save a partial report before the cap is reached. For complex multi-table investigations, consider running focused sessions per table. OAuth (Pro/Max) sessions are turn-limited rather than dollar-capped.
 
 **Empty or missing report**
 
