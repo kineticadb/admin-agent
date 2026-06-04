@@ -29,6 +29,7 @@ npm run dev -- --login-method=TYPE   # Login method: claudeai (Pro/Max) or conso
 npm run dev -- --login-org=UUID      # Target organization UUID for OAuth
 npm run dev -- --logout              # Log out from Anthropic account and exit
 npm run dev -- --model=NAME          # Override agent model (sonnet | haiku | opus); default: sonnet
+npm run dev -- --max-budget=USD      # Per-session budget cap in USD (API-key billing only); default: 5.00
 ```
 
 Run a single test file:
@@ -44,6 +45,8 @@ ANTHROPIC_API_KEY=sk-...       # Optional — OAuth login via browser if unset
 KINETICA_URL=http://host:9191  # Prompted interactively if not set
 KINETICA_USER=admin            # Prompted interactively if not set
 KINETICA_PASS=secret           # Prompted interactively if not set (masked)
+KINETICA_HTTPS_ONLY=1          # Optional: refuse plaintext HTTP fallback after a failed HTTPS probe
+ADMIN_AGENT_MAX_BUDGET=10      # Optional: per-session budget cap in USD (overridden by --max-budget); default 5.00
 DEBUG=1                        # Optional: logs HTTP requests + system-prompt token size to stderr
 NODE_ENV=test                  # Set automatically by vitest; skips main() execution
 ```
@@ -97,7 +100,7 @@ Agent configuration:
 - **Allowed tools**: explicit list of 16 diagnostic + save_report + alter_table_columns tools (no wildcards — mutation tools intentionally excluded so they fall through to `canUseTool` callback for approval; alter_table_columns is allowed because it implements its own checklist + SQL preview approval)
 - **Disallowed tools**: `Bash`, `Edit`, `Write`, `MultiEdit` — agent cannot modify files or run shell commands
 - **`canUseTool` callback**: wires `createApprovalGate()` — mutation tools not in the allow-list trigger interactive y/n/explain approval prompt
-- **Budget**: `$5.00` max per session (`DEFAULT_MAX_BUDGET_USD`)
+- **Budget**: configurable per-session cap, resolved `--max-budget` flag > `ADMIN_AGENT_MAX_BUDGET` env > `DEFAULT_MAX_BUDGET_USD` ($5.00) via `resolveMaxBudgetUsd()`. **Billing-aware**: the dollar cap is passed to the SDK as `maxBudgetUsd` only under API-key billing (`dollarCapped`); OAuth/subscription (Pro/Max) sessions are turn-limited instead (no dollar figure). A running-cost tripwire warns once at 80% (`DEFAULT_WARN_FRACTION`) — see Session Budget Guard.
 - **Max turns**: 100
 - **Streaming**: `includePartialMessages: true` — text deltas stream to stderr in real-time
 - **Session**: `persistSession: false` — no state between sessions
@@ -221,6 +224,17 @@ The entire knowledge corpus (all playbooks + all references + SQL examples + too
 - `DEFAULT_PROMPT_BUDGET_TOKENS = 20_000` — warn threshold (a tripwire, not a hard limit; raised from 15_000 on 2026-06-03 since the cached system prompt makes corpus token cost near-zero)
 
 Wired into `runAgent()` immediately after `buildSystemPrompt()`: a `DEBUG`-gated size line plus an **unconditional** over-budget warning to stderr cueing keyword-based playbook selection. Measured baseline (2026-05-31): the assembled prompt is **~13,422 tokens** with 6 playbooks + 9 references — ~33% under the 20,000 threshold. Note the system prompt is **cached** by the Agent SDK (built once at startup, re-read on every turn), so corpus token cost is near-zero in practice — `runAgent()` emits a `DEBUG`-gated cache-token line in the session summary (`cacheReadTokens > 0` confirms reuse).
+
+### Session Budget Guard (`agent/session-budget.ts`)
+
+Caps per-session spend. The SDK's `maxBudgetUsd` is the source of truth for the hard cutoff, but it only reports the true dollar figure on the _final_ result message — so this module estimates running cost from per-turn token `usage` to warn the operator _before_ the cap fires. Like `prompt-budget.ts`, it's a tripwire, not an accountant. Pure functions + closure-based factory; never throws (bad token counts degrade to 0).
+
+- `resolveMaxBudgetUsd(flag?, env?)` — resolves the cap: `--max-budget` flag > `ADMIN_AGENT_MAX_BUDGET` env > `DEFAULT_MAX_BUDGET_USD` ($5.00). Invalid values (≤ 0, non-finite, non-numeric) are ignored so a bad env var degrades to the default.
+- `createBudgetTracker({ maxUsd, warnFraction? })` — accumulates estimated spend; `shouldWarn()` fires once when spend strictly exceeds `warnFraction * maxUsd` (default `DEFAULT_WARN_FRACTION` = 0.8), `markWarned()` makes it one-shot.
+- `estimateTurnCostUsd()` + `MODEL_PRICING` — price one turn's usage from a per-model, per-MTok table (estimate only).
+- `fromSdkUsage()` — normalizes the SDK's snake_case `usage` shape into `TokenUsage`.
+
+Wired into `runAgent()`: the budget is resolved in `cli/index.ts` and threaded through `RunAgentOptions.maxBudgetUsd`. A startup line shows the guard (`Budget guard: $X.XX (raise with --max-budget)` for API-key billing, or `subscription (Pro/Max) — turn-limited` for OAuth). On hitting the cap the session ends with `error_max_budget_usd` framed as a safety limit, not a crash.
 
 ### Credential Security
 
