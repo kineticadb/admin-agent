@@ -142,6 +142,8 @@ import {
   MCP_SERVER_NAME,
   isExitCommand,
   makeInteractivePrompt,
+  contentCallsSaveReport,
+  formatMetricsLine,
 } from "./run-agent.js";
 import { createTurnGate } from "./turn-gate.js";
 import type { TurnGate } from "./turn-gate.js";
@@ -325,6 +327,263 @@ describe("explicit allowedTools", () => {
     for (const entry of options.allowedTools) {
       expect(entry).not.toContain("*");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Budget guard
+// ---------------------------------------------------------------------------
+
+/** Build a minimal assistant message carrying token usage for cost-tracking tests. */
+function makeAssistantMsg(usage: Record<string, number>): Record<string, unknown> {
+  return {
+    type: "assistant",
+    message: { stop_reason: "end_turn", usage },
+  };
+}
+
+/** Build an assistant message whose content invokes save_report (an investigation boundary). */
+function makeSaveReportMsg(): Record<string, unknown> {
+  return {
+    type: "assistant",
+    message: {
+      stop_reason: "tool_use",
+      usage: { output_tokens: 100 },
+      content: [
+        { type: "text", text: "Saving the report." },
+        { type: "tool_use", id: "t1", name: `mcp__${MCP_SERVER_NAME}__save_report`, input: {} },
+      ],
+    },
+  };
+}
+
+describe("budget guard", () => {
+  it("sets maxBudgetUsd on query options for api_key billing", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+    await runAgent(makeSession(), undefined, false, undefined, {
+      authMethod: "api_key",
+      maxBudgetUsd: 7,
+    });
+    const options = mockQuery.mock.calls[0][0].options as { maxBudgetUsd?: number };
+    expect(options.maxBudgetUsd).toBe(7);
+  });
+
+  it("defaults to api_key with a $5 cap when no options are provided", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+    await runAgent(makeSession());
+    const options = mockQuery.mock.calls[0][0].options as { maxBudgetUsd?: number };
+    expect(options.maxBudgetUsd).toBe(5);
+  });
+
+  it("omits maxBudgetUsd for OAuth (subscription) billing", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+    await runAgent(makeSession(), undefined, false, undefined, {
+      authMethod: "oauth",
+      maxBudgetUsd: 7,
+    });
+    const options = mockQuery.mock.calls[0][0].options as { maxBudgetUsd?: number };
+    expect(options.maxBudgetUsd).toBeUndefined();
+  });
+
+  it("announces the dollar guard at startup for api_key", async () => {
+    const { stderrOutput } = setupRunAgentMocks();
+    await runAgent(makeSession(), undefined, false, undefined, {
+      authMethod: "api_key",
+      maxBudgetUsd: 5,
+    });
+    const out = stderrOutput.join("");
+    expect(out).toContain("Budget guard: $5.00");
+    expect(out).toContain("--max-budget");
+  });
+
+  it("announces a subscription guard at startup for OAuth", async () => {
+    const { stderrOutput } = setupRunAgentMocks();
+    await runAgent(makeSession(), undefined, false, undefined, { authMethod: "oauth" });
+    const out = stderrOutput.join("");
+    expect(out).toContain("subscription");
+    expect(out).not.toContain("Budget guard: $");
+  });
+
+  it("prints an actionable message when the budget guard is hit", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    mockQuery.mockReturnValue(
+      makeQueryResult([makeResultMsg({ subtype: "error_max_budget_usd", total_cost_usd: 5.02 })]),
+    );
+    await runAgent(makeSession(), undefined, false, undefined, {
+      authMethod: "api_key",
+      maxBudgetUsd: 5,
+    });
+    const out = stderrOutput.join("");
+    expect(out).toContain("budget guard");
+    expect(out).toContain("$5.02 spent");
+    expect(out).toContain("--max-budget");
+    expect(out).toContain("reports/");
+  });
+
+  it("prints an actionable message when the turn limit is hit", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    mockQuery.mockReturnValue(
+      makeQueryResult([makeResultMsg({ subtype: "error_max_turns", num_turns: 100 })]),
+    );
+    await runAgent(makeSession());
+    const out = stderrOutput.join("");
+    expect(out).toContain("turn limit");
+    expect(out).toContain("reports/");
+  });
+
+  it("warns once when estimated spend crosses ~80% of the cap (api_key)", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    // Tiny cap + a large output-token turn (~$15 on sonnet) blows past 80% in one turn.
+    mockQuery.mockReturnValue(
+      makeQueryResult([makeAssistantMsg({ output_tokens: 1_000_000 }), makeResultMsg()]),
+    );
+    await runAgent(makeSession(), undefined, false, undefined, {
+      authMethod: "api_key",
+      maxBudgetUsd: 0.01,
+    });
+    const out = stderrOutput.join("");
+    expect(out).toContain("Approaching budget guard");
+  });
+
+  it("does not warn about dollars for OAuth even on a large turn", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    mockQuery.mockReturnValue(
+      makeQueryResult([makeAssistantMsg({ output_tokens: 1_000_000 }), makeResultMsg()]),
+    );
+    await runAgent(makeSession(), undefined, false, undefined, { authMethod: "oauth" });
+    const out = stderrOutput.join("");
+    expect(out).not.toContain("Approaching budget guard");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// contentCallsSaveReport
+// ---------------------------------------------------------------------------
+
+describe("contentCallsSaveReport", () => {
+  it("detects a save_report tool_use block", () => {
+    const content = [
+      { type: "text", text: "hi" },
+      { type: "tool_use", name: `mcp__${MCP_SERVER_NAME}__save_report` },
+    ];
+    expect(contentCallsSaveReport(content)).toBe(true);
+  });
+
+  it("returns false when no save_report block is present", () => {
+    const content = [
+      { type: "text", text: "hi" },
+      { type: "tool_use", name: `mcp__${MCP_SERVER_NAME}__kinetica_health` },
+    ];
+    expect(contentCallsSaveReport(content)).toBe(false);
+  });
+
+  it("returns false for non-array / malformed content (never throws)", () => {
+    expect(contentCallsSaveReport(undefined)).toBe(false);
+    expect(contentCallsSaveReport(null)).toBe(false);
+    expect(contentCallsSaveReport("save_report")).toBe(false);
+    expect(contentCallsSaveReport([null, 42, { type: "tool_use" }])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatMetricsLine
+// ---------------------------------------------------------------------------
+
+describe("formatMetricsLine", () => {
+  it("formats turns, duration, API percentage, and cost", () => {
+    expect(formatMetricsLine(3, 14000, 12320, 0.041)).toBe(
+      "Turns: 3. Duration: 14s (88% API). Cost: $0.0410.",
+    );
+  });
+
+  it("omits the Cost segment when costUsd is undefined (subscription users)", () => {
+    expect(formatMetricsLine(3, 14000, 12320)).toBe("Turns: 3. Duration: 14s (88% API).");
+  });
+
+  it("omits the Cost segment when cost is zero", () => {
+    expect(formatMetricsLine(1, 1000, 500, 0)).toBe("Turns: 1. Duration: 1s (50% API).");
+  });
+
+  it("reports 0% API when duration is zero (no divide-by-zero)", () => {
+    expect(formatMetricsLine(0, 0, 0)).toBe("Turns: 0. Duration: 0s (0% API).");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-investigation summary
+// ---------------------------------------------------------------------------
+
+describe("per-investigation summary", () => {
+  it("prints a summary after the agent saves a report (api_key, with cost)", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    mockQuery.mockReturnValue(
+      makeQueryResult([
+        makeSaveReportMsg(),
+        makeResultMsg({
+          num_turns: 3,
+          duration_ms: 14000,
+          duration_api_ms: 12320,
+          total_cost_usd: 0.041,
+        }),
+      ]),
+    );
+    await runAgent(makeSession(), undefined, false, undefined, { authMethod: "api_key" });
+    const out = stderrOutput.join("");
+    expect(out).toContain(
+      "Investigation complete — Turns: 3. Duration: 14s (88% API). Cost: $0.0410.",
+    );
+  });
+
+  it("does NOT print a per-investigation summary when no report was saved", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    mockQuery.mockReturnValue(
+      makeQueryResult([makeAssistantMsg({ output_tokens: 100 }), makeResultMsg()]),
+    );
+    await runAgent(makeSession());
+    expect(stderrOutput.join("")).not.toContain("Investigation complete");
+  });
+
+  it("omits the cost from the per-investigation summary for OAuth users", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    mockQuery.mockReturnValue(
+      makeQueryResult([makeSaveReportMsg(), makeResultMsg({ total_cost_usd: 0.5 })]),
+    );
+    await runAgent(makeSession(), undefined, false, undefined, { authMethod: "oauth" });
+    const out = stderrOutput.join("");
+    expect(out).toContain("Investigation complete —");
+    expect(out).not.toContain("Cost: $");
+  });
+
+  it("reports each investigation as a delta of the cumulative SDK metrics", async () => {
+    const { stderrOutput, mockQuery } = setupRunAgentMocks();
+    // Two investigations; SDK metrics are cumulative, so the second line must show the delta.
+    mockQuery.mockReturnValue(
+      makeQueryResult([
+        makeSaveReportMsg(),
+        makeResultMsg({
+          num_turns: 3,
+          duration_ms: 10000,
+          duration_api_ms: 8000,
+          total_cost_usd: 0.04,
+        }),
+        makeSaveReportMsg(),
+        makeResultMsg({
+          num_turns: 7,
+          duration_ms: 25000,
+          duration_api_ms: 20000,
+          total_cost_usd: 0.1,
+        }),
+      ]),
+    );
+    await runAgent(makeSession(), undefined, false, undefined, { authMethod: "api_key" });
+    const out = stderrOutput.join("");
+    expect(out).toContain(
+      "Investigation complete — Turns: 3. Duration: 10s (80% API). Cost: $0.0400.",
+    );
+    // Second investigation: turns 7-3=4, duration 15s, api 12000/15000=80%, cost 0.10-0.04.
+    expect(out).toContain(
+      "Investigation complete — Turns: 4. Duration: 15s (80% API). Cost: $0.0600.",
+    );
   });
 });
 
@@ -1264,7 +1523,7 @@ describe("runAgent", () => {
       await runAgent(session);
       const output = stderrOutput.join("");
       // 1000 + 234 read, 500 + 67 created — a non-zero read count confirms caching.
-      expect(output).toContain("cache: 1234 read / 567 created");
+      expect(output).toContain("Cache: 1234 read / 567 created");
     } finally {
       if (prevDebug === undefined) delete process.env.DEBUG;
       else process.env.DEBUG = prevDebug;
@@ -1287,7 +1546,7 @@ describe("runAgent", () => {
       );
       await runAgent(session);
       const output = stderrOutput.join("");
-      expect(output).not.toContain("cache:");
+      expect(output).not.toContain("Cache:");
     } finally {
       if (prevDebug === undefined) delete process.env.DEBUG;
       else process.env.DEBUG = prevDebug;

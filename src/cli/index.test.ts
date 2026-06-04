@@ -142,7 +142,10 @@ describe("main", () => {
     });
     await main();
     expect(runAgent).toHaveBeenCalledOnce();
-    expect(runAgent).toHaveBeenCalledWith(fakeSession, "7.2.3.11", false, undefined);
+    expect(runAgent).toHaveBeenCalledWith(fakeSession, "7.2.3.11", false, undefined, {
+      authMethod: "api_key",
+      maxBudgetUsd: 5,
+    });
   });
 
   // --model flag — valid value threads through to runAgent
@@ -214,6 +217,52 @@ describe("main", () => {
     expect(output).toContain("sonnet");
     expect(output).toContain("haiku");
     expect(output).toContain("opus");
+  });
+
+  // --max-budget flag — valid value threads through to runAgent options (5th arg)
+  it("passes a valid --max-budget value to runAgent options", async () => {
+    process.argv = ["node", "admin-agent", "--max-budget=12.5"];
+    await main();
+    expect(runAgent).toHaveBeenCalledOnce();
+    const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(call[4]).toMatchObject({ maxBudgetUsd: 12.5 });
+  });
+
+  it.each(["abc", "-1", "0", ""])(
+    "writes an error and returns early when --max-budget is invalid (%s)",
+    async (bad) => {
+      process.argv = ["node", "admin-agent", `--max-budget=${bad}`];
+      await main();
+      const err = stderrOutput.join("");
+      expect(err).toContain("invalid --max-budget value");
+      expect(connectWithRetry).not.toHaveBeenCalled();
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    },
+  );
+
+  // Auth method is threaded into runAgent options so the agent can frame the guard
+  it("threads authMethod=api_key into runAgent options", async () => {
+    mockAuthenticateAnthropic.mockResolvedValueOnce({ method: "api_key" });
+    await main();
+    const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(call[4]).toMatchObject({ authMethod: "api_key" });
+  });
+
+  it("threads authMethod=oauth into runAgent options", async () => {
+    mockAuthenticateAnthropic.mockResolvedValueOnce({ method: "oauth", email: "x@example.com" });
+    await main();
+    const call = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(call[4]).toMatchObject({ authMethod: "oauth" });
+  });
+
+  // Help text documents the --max-budget flag and the env var
+  it("help text documents --max-budget and ADMIN_AGENT_MAX_BUDGET", async () => {
+    process.argv = ["node", "admin-agent", "--help"];
+    await main();
+    const output = stdoutOutput.join("");
+    expect(output).toContain("--max-budget");
+    expect(output).toContain("ADMIN_AGENT_MAX_BUDGET");
   });
 
   // --version flag

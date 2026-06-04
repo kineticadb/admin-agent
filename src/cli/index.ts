@@ -8,6 +8,7 @@ import { loadEnvFile } from "../session/env-file.js";
 import { connectWithRetry } from "../session/verify.js";
 import { runAgent, SUPPORTED_MODELS, DEFAULT_AGENT_MODEL } from "../agent/run-agent.js";
 import type { AgentModel } from "../agent/run-agent.js";
+import { resolveMaxBudgetUsd, isValidBudget } from "../agent/session-budget.js";
 import type { KineticaSession } from "../types/index.js";
 
 export let verbose = false;
@@ -34,12 +35,14 @@ function printHelp(): void {
     "    --login-org=UUID      Target organization UUID for OAuth",
     "    --logout              Log out from Anthropic account and exit",
     `    --model=NAME          Override agent model (${SUPPORTED_MODELS.join(" | ")}); default: sonnet`,
+    "    --max-budget=USD      Per-session budget cap in USD (API-key billing only); default: 5.00",
     "",
     "  Environment variables:",
-    "    ANTHROPIC_API_KEY  Anthropic API key (if not set, OAuth login via browser is used)",
-    "    KINETICA_URL       Kinetica endpoint URL",
-    "    KINETICA_USER      Admin username",
-    "    KINETICA_PASS      Admin password",
+    "    ANTHROPIC_API_KEY      Anthropic API key (if not set, OAuth login via browser is used)",
+    "    ADMIN_AGENT_MAX_BUDGET Per-session budget cap in USD (overridden by --max-budget)",
+    "    KINETICA_URL           Kinetica endpoint URL",
+    "    KINETICA_USER          Admin username",
+    "    KINETICA_PASS          Admin password",
     "",
   ];
   process.stdout.write(lines.join("\n") + "\n");
@@ -93,6 +96,25 @@ export async function main(): Promise<void> {
     }
   }
 
+  // Parse --max-budget flag; must be a positive finite number. Reject bad input loudly
+  // (the user typed it now) — env/default fallback is handled by resolveMaxBudgetUsd.
+  const budgetArg = args.find((a) => a.startsWith("--max-budget="));
+  const budgetValue = budgetArg?.split("=")[1];
+  let maxBudgetFlag: number | undefined;
+  if (budgetValue !== undefined) {
+    const parsed = Number(budgetValue);
+    if (!isValidBudget(parsed)) {
+      process.stderr.write(
+        pc.red(
+          `Error: invalid --max-budget value "${budgetValue}". Use a positive number, e.g. --max-budget=10\n`,
+        ),
+      );
+      process.exitCode = 1;
+      return;
+    }
+    maxBudgetFlag = parsed;
+  }
+
   loadEnvFile();
 
   // Print the logo/version banner first — the model line is emitted below,
@@ -113,7 +135,7 @@ export async function main(): Promise<void> {
   // the same `?? DEFAULT_AGENT_MODEL` for non-CLI callers, so the two sites
   // never drift.
   const effectiveModel: AgentModel = model ?? DEFAULT_AGENT_MODEL;
-  process.stderr.write(pc.dim(`model: ${effectiveModel}\n`));
+  process.stderr.write(pc.dim(`Model: ${effectiveModel}\n`));
 
   // Authenticate with Anthropic BEFORE collecting Kinetica credentials.
   // Fail fast if no API key and OAuth is impossible (non-interactive terminal).
@@ -125,9 +147,15 @@ export async function main(): Promise<void> {
     process.stderr.write(pc.dim("Authenticated via API key\n"));
   }
 
+  // Resolve the effective budget: --max-budget flag > ADMIN_AGENT_MAX_BUDGET env > default.
+  const maxBudgetUsd = resolveMaxBudgetUsd(maxBudgetFlag);
+
   const { session: connectedSession, kineticaVersion, degraded } = await connectWithRetry();
   session = connectedSession;
-  await runAgent(session, kineticaVersion, degraded, model);
+  await runAgent(session, kineticaVersion, degraded, model, {
+    authMethod: authResult.method,
+    maxBudgetUsd,
+  });
 }
 
 export function getSession(): KineticaSession | undefined {

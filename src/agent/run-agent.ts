@@ -38,6 +38,8 @@ import { discoverCatalogSchemas } from "./discover-schemas.js";
 import { loadPlaybooks } from "./load-playbooks.js";
 import { loadReferences } from "./load-references.js";
 import { checkPromptBudget } from "./prompt-budget.js";
+import { createBudgetTracker, fromSdkUsage, DEFAULT_MAX_BUDGET_USD } from "./session-budget.js";
+import type { BudgetTracker } from "./session-budget.js";
 import {
   makeDiagnosticTools,
   createDiagnosticRegistry,
@@ -51,6 +53,7 @@ import { createApprovalGate } from "../approval/gate.js";
 import { createTurnGate } from "./turn-gate.js";
 import type { TurnGate } from "./turn-gate.js";
 import type { KineticaSession } from "../types/index.js";
+import type { AuthResult } from "../auth/oauth-flow.js";
 import { createStreamingTableAligner } from "../output/streaming-table-aligner.js";
 import { createSpinner } from "../output/spinner.js";
 import type { Spinner } from "../output/spinner.js";
@@ -62,6 +65,53 @@ import { hostManagerStatus, hostManagerAlerts } from "../tools/rest/host-manager
 
 /** MCP server name used to prefix tool calls (exported for testing). */
 export const MCP_SERVER_NAME = "kinetica-diagnostics";
+
+/**
+ * Fully-qualified name of the save_report tool. Detecting this tool call in the message
+ * stream marks the end of an investigation (the system prompt mandates a save per issue),
+ * which is the boundary at which the per-investigation summary is printed.
+ */
+const SAVE_REPORT_TOOL_NAME = `mcp__${MCP_SERVER_NAME}__save_report`;
+
+/**
+ * True if an assistant message's content contains a tool_use block invoking save_report.
+ * Takes the loosely-typed SDK content array as `unknown` so this stays a pure, testable
+ * predicate decoupled from SDK types. Never throws — non-array or malformed content → false.
+ */
+export function contentCallsSaveReport(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => {
+    if (typeof block !== "object" || block === null) return false;
+    const { type, name } = block as { type?: unknown; name?: unknown };
+    return type === "tool_use" && name === SAVE_REPORT_TOOL_NAME;
+  });
+}
+
+/**
+ * Format the trailing " Cost: $Z." segment, or "" when there is nothing to show.
+ * The segment is omitted when `costUsd` is undefined or zero — `undefined` suppresses the
+ * dollar figure for OAuth/subscription users, mirroring the budget guard. Single source of
+ * truth for the cost-format rule so the metrics line and the error-path summary can't drift.
+ */
+export function formatCostSuffix(costUsd?: number): string {
+  return costUsd !== undefined && costUsd > 0 ? ` Cost: $${costUsd.toFixed(4)}.` : "";
+}
+
+/**
+ * Format a one-line metrics summary: "Turns: N. Duration: Xs (Y% API). Cost: $Z.".
+ * The Cost segment is omitted when `costUsd` is undefined or zero (see formatCostSuffix).
+ * Shared by the per-investigation line and the session-end line so they can't drift.
+ */
+export function formatMetricsLine(
+  turns: number,
+  durationMs: number,
+  durationApiMs: number,
+  costUsd?: number,
+): string {
+  const durationSec = Math.round(durationMs / 1000);
+  const apiPct = durationMs > 0 ? Math.round((durationApiMs / durationMs) * 100) : 0;
+  return `Turns: ${turns}. Duration: ${durationSec}s (${apiPct}% API).${formatCostSuffix(costUsd)}`;
+}
 
 /** Commands that end the interactive session. */
 const EXIT_COMMANDS = new Set(["exit", "quit", "end", "q"]);
@@ -80,8 +130,22 @@ export type AgentModel = (typeof SUPPORTED_MODELS)[number];
  */
 export const DEFAULT_AGENT_MODEL: AgentModel = "sonnet";
 
-/** Default maximum budget in USD per session. */
-const DEFAULT_MAX_BUDGET_USD = 5.0;
+/**
+ * Anthropic authentication method, surfaced from the CLI so the agent can frame the
+ * budget guard correctly: a dollar cap only means something when the user is billed
+ * per token (api_key). OAuth (Pro/Max subscription) users are not, so we do not impose
+ * a dollar cap on them — the turn limit is their guard.
+ *
+ * Derived from `AuthResult["method"]` (the auth domain owns the canonical set) so the CLI
+ * can pass `authResult.method` straight through and a new auth method can't silently diverge.
+ */
+export type AuthMethod = AuthResult["method"];
+
+/** Optional knobs passed from the CLI into runAgent. */
+export type RunAgentOptions = {
+  readonly authMethod?: AuthMethod;
+  readonly maxBudgetUsd?: number;
+};
 
 /**
  * Explicit allow-list for diagnostic + report + self-approving tools.
@@ -96,7 +160,7 @@ const DEFAULT_MAX_BUDGET_USD = 5.0;
  */
 export const ALLOWED_TOOL_NAMES = [
   ...DIAGNOSTIC_TOOL_NAMES.map((name) => `mcp__${MCP_SERVER_NAME}__${name}`),
-  `mcp__${MCP_SERVER_NAME}__save_report`,
+  SAVE_REPORT_TOOL_NAME,
   `mcp__${MCP_SERVER_NAME}__${ALTER_TABLE_COLUMNS_TOOL_NAME}`,
 ];
 
@@ -271,13 +335,27 @@ export async function displayDegradedStatus(session: KineticaSession): Promise<v
  * @param session - The authenticated Kinetica session
  * @param kineticaVersion - Optional version string detected during connectivity check
  * @param degraded - When true, DB engine is unreachable; skip schema discovery, use degraded prompt
+ * @param model - Optional agent model override
+ * @param options - Optional auth method + resolved budget from the CLI. A single
+ *   trailing options object keeps the signature stable for the many existing
+ *   `runAgent(session)` call sites (notably the test suite).
  */
 export async function runAgent(
   session: KineticaSession,
   kineticaVersion?: string,
   degraded?: boolean,
   model?: AgentModel,
+  runOptions?: RunAgentOptions,
 ): Promise<void> {
+  // Frame the budget guard by how the user is billed. A dollar cap is only meaningful
+  // for per-token (api_key) billing; OAuth subscription users rely on the turn limit.
+  const authMethod: AuthMethod = runOptions?.authMethod ?? "api_key";
+  // Single source of truth for "this billing model has a real dollar cap" — used to gate
+  // the SDK cap, the startup line, and the running-cost warning so they can't drift apart.
+  const dollarCapped = authMethod === "api_key";
+  // The CLI always passes a fully-resolved budget; this `??` only defaults for non-CLI
+  // callers (e.g. tests), mirroring how `model` re-defaults in cli/index.ts so the two never drift.
+  const resolvedBudgetUsd = runOptions?.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD;
   // Pre-flight: discover schemas, load playbooks, and load references in parallel (all independent)
   // In degraded mode, schema discovery is skipped (requires DB engine on port 9191)
   const [catalogSchemas, playbooks, references] = await Promise.all([
@@ -302,7 +380,7 @@ export async function runAgent(
   const budget = checkPromptBudget(systemPrompt);
   if (process.env.DEBUG) {
     process.stderr.write(
-      pc.dim(`system prompt: ~${budget.tokens} tokens (${budget.chars} chars)\n`),
+      pc.dim(`System prompt: ~${budget.tokens} tokens (${budget.chars} chars)\n`),
     );
   }
   if (budget.overBudget) {
@@ -365,12 +443,22 @@ export async function runAgent(
     fallbackModel: "haiku" as const,
     thinking: { type: "adaptive" as const },
     maxTurns: 100,
-    maxBudgetUsd: DEFAULT_MAX_BUDGET_USD,
+    // Only impose a dollar cap for per-token billing. For OAuth subscription users
+    // the SDK would otherwise cut them off at a notional dollar figure they never pay;
+    // omitting it leaves the turn limit (maxTurns) as their guard.
+    ...(dollarCapped ? { maxBudgetUsd: resolvedBudgetUsd } : {}),
     persistSession: false,
     includePartialMessages: true,
     abortController,
     env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "admin-agent" },
   };
+
+  // Budget guard line — make the safety rail visible up front so hitting it is never
+  // a surprise. Framed by billing model: a dollar amount for api_key, a turn-limit note
+  // for OAuth subscription users (where dollars are meaningless).
+  const guardLine = dollarCapped
+    ? pc.dim(`Budget guard: $${resolvedBudgetUsd.toFixed(2)} (raise with --max-budget)\n`)
+    : pc.dim("Budget guard: subscription (Pro/Max) — turn-limited\n");
 
   // Welcome message — printed once before the interactive loop begins.
   // Model identity lives in the startup banner (see src/cli/banner.ts) so it's
@@ -381,11 +469,11 @@ export async function runAgent(
       "DB engine (port 9191) is unreachable. Only host manager tools are available.\n\n",
     );
     await displayDegradedStatus(session);
-    process.stderr.write("Type 'exit' to end the session.\n\n");
   } else {
     process.stderr.write("\nKinetica Diagnostic Session Ready\n");
-    process.stderr.write("Type 'exit' to end the session.\n\n");
   }
+  process.stderr.write(guardLine);
+  process.stderr.write("Type 'exit' to end the session.\n\n");
 
   // Turn gate — blocks the prompt generator until the agent finishes its turn
   const turnGate = createTurnGate();
@@ -420,6 +508,22 @@ export async function runAgent(
 
   let hadNonAbortError = false;
 
+  // Per-investigation summary state. The SDK's result metrics are CUMULATIVE from session
+  // start, so we snapshot them at each investigation boundary and print the delta. An
+  // investigation boundary = a run in which the agent called save_report (the system prompt
+  // mandates that at the end of each investigation), detected via `reportSavedThisRun`.
+  // The four cumulative metrics travel together, so a single snapshot object (replaced
+  // wholesale at each boundary) keeps them in lockstep and adding a 5th metric is one edit.
+  let reportSavedThisRun = false;
+  let invBase = { turns: 0, duration: 0, api: 0, cost: 0 };
+
+  // Running-cost tripwire (api_key only). The SDK enforces the true cap via maxBudgetUsd;
+  // this estimates spend from per-turn token usage so we can warn the operator *before*
+  // the hard cutoff. Deliberately absent for OAuth — there is no dollar spend to warn about.
+  const budgetTracker: BudgetTracker | undefined = dollarCapped
+    ? createBudgetTracker({ maxUsd: resolvedBudgetUsd })
+    : undefined;
+
   try {
     for await (const message of agentQuery as AsyncIterable<SDKMessage>) {
       if (message.type === "stream_event") {
@@ -452,6 +556,29 @@ export async function runAgent(
         if (!lastStreamCharWasNewline) {
           process.stderr.write("\n");
           lastStreamCharWasNewline = true;
+        }
+        // Running-cost estimate: accumulate this turn's usage (fromSdkUsage normalizes the
+        // SDK's snake_case shape) and warn once at ~80% of the cap.
+        if (budgetTracker) {
+          /* eslint-disable-next-line @typescript-eslint/no-unsafe-member-access */
+          budgetTracker.add(fromSdkUsage(assistantMsg.message.usage), effectiveModel);
+          if (budgetTracker.shouldWarn()) {
+            spinner.stop();
+            process.stderr.write(
+              pc.yellow(
+                `\n⚠ Approaching budget guard (~$${budgetTracker.spentUsd().toFixed(2)} / ` +
+                  `$${resolvedBudgetUsd.toFixed(2)}) — wrapping up soon. ` +
+                  `Save a partial report now if you want to preserve findings.\n`,
+              ),
+            );
+            budgetTracker.markWarned();
+          }
+        }
+        // Investigation boundary: note when the agent saves a report this run, so the
+        // matching result message can print a per-investigation summary.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        if (contentCallsSaveReport(assistantMsg.message.content)) {
+          reportSavedThisRun = true;
         }
         // Signal the generator to prompt the user after the agent finishes.
         // Only on end_turn — NOT tool_use (agent continues after tool calls).
@@ -496,10 +623,21 @@ export async function runAgent(
 
         if (resultMsg.subtype === "error_max_turns") {
           process.stderr.write(
-            "\nInvestigation hit turn limit. Partial report may be available.\n",
+            pc.yellow(
+              `\nReached the turn limit (${numTurns} turns) — a safety guard, not an error. ` +
+                `Any report the agent saved is in reports/. Start a fresh session to continue.\n`,
+            ),
           );
         } else if (resultMsg.subtype === "error_max_budget_usd") {
-          process.stderr.write("\nBudget limit reached.\n");
+          const spentStr = totalCostUsd > 0 ? ` ($${totalCostUsd.toFixed(2)} spent)` : "";
+          process.stderr.write(
+            pc.yellow(
+              `\nReached the $${resolvedBudgetUsd.toFixed(2)} budget guard${spentStr} — ` +
+                `a safety limit, not an error. Re-run with --max-budget=<amount> ` +
+                `(or set ADMIN_AGENT_MAX_BUDGET) for more headroom. ` +
+                `Any report the agent saved is in reports/.\n`,
+            ),
+          );
         } else if (resultMsg.subtype === "error_during_execution") {
           process.stderr.write(
             "\nExecution error — the agent encountered an unrecoverable failure.\n",
@@ -512,6 +650,27 @@ export async function runAgent(
         if (resultMsg.permission_denials.length > 0) {
           const denied = resultMsg.permission_denials.map((d) => d.tool_name).join(", ");
           process.stderr.write(`\nPermission denials: ${denied}\n`);
+        }
+
+        // Per-investigation summary: if the agent saved a report this run, print the delta
+        // since the previous investigation. SDK metrics are cumulative from session start,
+        // so we subtract the snapshot taken at the last boundary. Cost is shown only when
+        // the user is dollar-billed (api_key), mirroring the budget guard.
+        if (reportSavedThisRun) {
+          const line = formatMetricsLine(
+            numTurns - invBase.turns,
+            durationMs - invBase.duration,
+            durationApiMs - invBase.api,
+            dollarCapped ? totalCostUsd - invBase.cost : undefined,
+          );
+          process.stderr.write(`\nInvestigation complete — ${line}\n`);
+          invBase = {
+            turns: numTurns,
+            duration: durationMs,
+            api: durationApiMs,
+            cost: totalCostUsd,
+          };
+          reportSavedThisRun = false;
         }
 
         // Unblock generator so it can exit cleanly
@@ -592,26 +751,26 @@ export async function runAgent(
     // Safety net for throw/abort paths where no result message was received
     turnGate.open();
 
-    // Session summary — durations from SDK (more precise than manual timer)
-    const durationSec = Math.round(durationMs / 1000);
-    const apiPct = durationMs > 0 ? Math.round((durationApiMs / durationMs) * 100) : 0;
-    const costStr = totalCostUsd > 0 ? ` Cost: $${totalCostUsd.toFixed(4)}.` : "";
+    // Session summary — cumulative metrics from SDK (more precise than a manual timer).
+    // Cost is gated on dollar billing, mirroring the per-investigation line and budget guard.
+    const sessionCost = dollarCapped ? totalCostUsd : undefined;
     // Verify the static system prompt is cached: cacheReadTokens > 0 means it was reused
     // across turns (re-read at ~10% input cost) instead of re-billed in full each turn.
     if (process.env.DEBUG && (cacheReadTokens > 0 || cacheCreationTokens > 0)) {
       process.stderr.write(
         pc.dim(
-          `cache: ${cacheReadTokens} read / ${cacheCreationTokens} created input tokens` +
+          `Cache: ${cacheReadTokens} read / ${cacheCreationTokens} created input tokens` +
             ` (read > 0 confirms the system prompt is served from cache)\n`,
         ),
       );
     }
     if (hadNonAbortError) {
-      process.stderr.write(`\nSession ended due to error. Turns: ${numTurns}.${costStr}\n`);
-    } else {
       process.stderr.write(
-        `\nSession ended. Turns: ${numTurns}. Duration: ${durationSec}s (${apiPct}% API).${costStr}\n`,
+        `\nSession ended due to error. Turns: ${numTurns}.${formatCostSuffix(sessionCost)}\n`,
       );
+    } else {
+      const line = formatMetricsLine(numTurns, durationMs, durationApiMs, sessionCost);
+      process.stderr.write(`\nSession ended. ${line}\n`);
     }
   }
 }

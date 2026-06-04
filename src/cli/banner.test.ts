@@ -63,21 +63,21 @@ describe("printBanner with logo", () => {
 
   it("omits the model line when no model is passed", () => {
     printBanner();
-    expect(stderrOutput.join("")).not.toContain("model:");
+    expect(stderrOutput.join("")).not.toContain("Model:");
   });
 
-  it("prints 'model: <name>' beneath the subtitle when a model is passed", () => {
+  it("prints 'Model: <name>' beneath the subtitle when a model is passed", () => {
     printBanner("haiku");
     const output = stderrOutput.join("");
-    expect(output).toContain("model: haiku");
+    expect(output).toContain("Model: haiku");
     // Model line must appear AFTER the version subtitle, not before.
     const subtitleIdx = output.indexOf("admin-agent");
-    const modelIdx = output.indexOf("model: haiku");
+    const modelIdx = output.indexOf("Model: haiku");
     expect(modelIdx).toBeGreaterThan(subtitleIdx);
   });
 
   it("accepts any supported model shorthand", () => {
     printBanner("opus");
-    expect(stderrOutput.join("")).toContain("model: opus");
+    expect(stderrOutput.join("")).toContain("Model: opus");
   });
 });

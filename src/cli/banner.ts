@@ -67,14 +67,14 @@ function gradientize(text: string): string {
  * Prints the startup banner (gradient logo + version subtitle) to stderr.
  *
  * @param model - Optional agent model shorthand (e.g., "sonnet"). When provided,
- *   a dim `model: <name>` line is appended directly beneath the subtitle so the
+ *   a dim `Model: <name>` line is appended directly beneath the subtitle so the
  *   operator sees which Claude model is powering the session before any
  *   investigation begins.
  */
 export function printBanner(model?: string): string {
   const version = getVersion();
   const subtitle = `admin-agent ${pc.dim(`v${version}`)}`;
-  const header = model ? `${subtitle}\n${pc.dim(`model: ${model}`)}` : subtitle;
+  const header = model ? `${subtitle}\n${pc.dim(`Model: ${model}`)}` : subtitle;
 
   process.stderr.write("\n\n" + gradientize(LOGO) + "\n\n" + header + "\n");
 
