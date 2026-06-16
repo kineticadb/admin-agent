@@ -324,6 +324,13 @@ describe("buildSystemPrompt", () => {
       expect(result).toContain("save_report");
     });
 
+    it("instructs agent to ask the operator BEFORE saving the report", () => {
+      const result = buildSystemPrompt();
+      // The ask must precede the save: the prompt mandates a yes/no question and
+      // ending the turn before save_report is called.
+      expect(result).toMatch(/ask BEFORE saving|save this report to disk\? \(yes\/no\)/i);
+    });
+
     it("instructs agent to ask about next issue or end session after report", () => {
       const result = buildSystemPrompt();
       expect(result).toMatch(/another.issue|next.issue|end.the.session|end session/i);

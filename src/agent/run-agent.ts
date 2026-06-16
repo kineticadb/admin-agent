@@ -36,19 +36,23 @@ import pc from "picocolors";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { discoverCatalogSchemas } from "./discover-schemas.js";
 import { loadPlaybooks } from "./load-playbooks.js";
-import { loadReferences } from "./load-references.js";
+import { loadReferences, loadBundleReferences } from "./load-references.js";
 import { checkPromptBudget } from "./prompt-budget.js";
 import { createBudgetTracker, fromSdkUsage, DEFAULT_MAX_BUDGET_USD } from "./session-budget.js";
 import type { BudgetTracker } from "./session-budget.js";
 import {
   makeDiagnosticTools,
-  createDiagnosticRegistry,
   makeMutationTools,
   makeAlterTableColumnsToolWithDeps,
   DIAGNOSTIC_TOOL_NAMES,
   ALTER_TABLE_COLUMNS_TOOL_NAME,
 } from "../tools/index.js";
 import { makeSaveReportTool } from "../report/save-report.js";
+import { buildBundleSystemPrompt } from "./bundle-system-prompt.js";
+import { makeBundleTools, createBundleRegistry, BUNDLE_TOOL_NAMES } from "../tools/bundle/index.js";
+import { createBundleHolder } from "../bundle/bundle-holder.js";
+import { promptBundleDirectory } from "../cli/pick-bundle-path.js";
+import type { BundleSource } from "../bundle/BundleSource.js";
 import { createApprovalGate } from "../approval/gate.js";
 import { createTurnGate } from "./turn-gate.js";
 import type { TurnGate } from "./turn-gate.js";
@@ -145,7 +149,19 @@ export type AuthMethod = AuthResult["method"];
 export type RunAgentOptions = {
   readonly authMethod?: AuthMethod;
   readonly maxBudgetUsd?: number;
+  /**
+   * Attach an extracted support bundle. Composable with a live `session`:
+   * - with a session → live tools + bundle tools (correlate history vs. current state)
+   * - without a session → bundle-only (read-only, offline)
+   * The bundle's file-backed tools are added on top of whatever the session provides;
+   * a bundle can also be attached later at runtime via the kinetica_load_bundle tool.
+   */
+  readonly bundleSource?: BundleSource;
 };
+
+/** Turn limits per mode. Bundle investigations are bounded (no mutation/verify rounds). */
+const LIVE_MAX_TURNS = 100;
+const BUNDLE_MAX_TURNS = 40;
 
 /**
  * Explicit allow-list for diagnostic + report + self-approving tools.
@@ -162,6 +178,15 @@ export const ALLOWED_TOOL_NAMES = [
   ...DIAGNOSTIC_TOOL_NAMES.map((name) => `mcp__${MCP_SERVER_NAME}__${name}`),
   SAVE_REPORT_TOOL_NAME,
   `mcp__${MCP_SERVER_NAME}__${ALTER_TABLE_COLUMNS_TOOL_NAME}`,
+];
+
+/**
+ * Allow-list for offline bundle mode: the 5 read-only bundle tools + save_report.
+ * No mutation/diagnostic live tools — they aren't even constructed in bundle mode.
+ */
+export const BUNDLE_ALLOWED_TOOL_NAMES = [
+  ...BUNDLE_TOOL_NAMES.map((name) => `mcp__${MCP_SERVER_NAME}__${name}`),
+  SAVE_REPORT_TOOL_NAME,
 ];
 
 /**
@@ -341,12 +366,15 @@ export async function displayDegradedStatus(session: KineticaSession): Promise<v
  *   `runAgent(session)` call sites (notably the test suite).
  */
 export async function runAgent(
-  session: KineticaSession,
+  session: KineticaSession | undefined,
   kineticaVersion?: string,
   degraded?: boolean,
   model?: AgentModel,
   runOptions?: RunAgentOptions,
 ): Promise<void> {
+  // Offline bundle mode swaps the data source: file-backed tools, bundle prompt,
+  // read-only by construction. `session` is ignored when a bundle source is given.
+  const bundleSource = runOptions?.bundleSource;
   // Frame the budget guard by how the user is billed. A dollar cap is only meaningful
   // for per-token (api_key) billing; OAuth subscription users rely on the turn limit.
   const authMethod: AuthMethod = runOptions?.authMethod ?? "api_key";
@@ -358,20 +386,39 @@ export async function runAgent(
   const resolvedBudgetUsd = runOptions?.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD;
   // Pre-flight: discover schemas, load playbooks, and load references in parallel (all independent)
   // In degraded mode, schema discovery is skipped (requires DB engine on port 9191)
-  const [catalogSchemas, playbooks, references] = await Promise.all([
-    degraded ? Promise.resolve(undefined) : discoverCatalogSchemas(session),
+  // Schema discovery needs the live DB engine — skipped in degraded and bundle modes.
+  // Bundle-scoped references (log-line format, severity ordering, file catalog) load
+  // UNCONDITIONALLY: the bundle tools are always registered (a bundle can be attached
+  // mid-session via kinetica_load_bundle) and the system prompt is built once, so even a
+  // pure live session needs this knowledge ready — otherwise a late attach drives the
+  // bundle tools blind (e.g. unaware that min_severity=ERROR silently drops UERR lines).
+  // The corpus is cached by the SDK, so the cost to a never-attaches session is ~nil.
+  const [catalogSchemas, playbooks, references, bundleReferences] = await Promise.all([
+    degraded || !session ? Promise.resolve(undefined) : discoverCatalogSchemas(session),
     loadPlaybooks(),
     loadReferences(),
+    loadBundleReferences(),
   ]);
 
-  // Build system prompt with Kinetica domain knowledge, discovered schemas, playbooks, and references
-  const systemPrompt = buildSystemPrompt(
-    kineticaVersion,
-    catalogSchemas,
-    playbooks,
-    references,
-    degraded,
-  );
+  // Bundle tools bind to a holder (lazy ref) so a live session can attach a bundle
+  // mid-conversation via kinetica_load_bundle. Seeded with the startup bundle, if any.
+  const bundleHolder = createBundleHolder(bundleSource);
+
+  // Capabilities, not modes: a session may have a live connection, an attached
+  // bundle, or both. Prompt selection follows what's present.
+  // - Live (with or without a bundle): full prompt + a Support Bundle Capability section.
+  // - Bundle-only (no live connection — e.g. cluster down): the dedicated read-only prompt.
+  const systemPrompt = session
+    ? buildSystemPrompt(
+        kineticaVersion,
+        catalogSchemas,
+        playbooks,
+        references,
+        degraded,
+        bundleHolder.isLoaded() ? "attached" : "available",
+        bundleReferences,
+      )
+    : buildBundleSystemPrompt(kineticaVersion, playbooks, references, bundleReferences);
 
   // Token-budget tripwire: the whole knowledge corpus is front-loaded into the
   // system prompt, so its cost grows with the corpus. Surface the size (DEBUG only)
@@ -392,32 +439,84 @@ export async function runAgent(
     );
   }
 
-  // Create all diagnostic tools bound to the current session
-  const diagnosticTools = makeDiagnosticTools(session, catalogSchemas);
-
-  // Create mutation tools bound to the current session
-  const mutationTools = makeMutationTools(session);
-
-  // Create the save_report tool
+  // The save_report tool is available in every session.
   const saveReportTool = makeSaveReportTool();
 
-  // Create the alter_table_columns batch tool (self-approving via checklist)
-  const alterTableColumnsTool = makeAlterTableColumnsToolWithDeps(session);
+  if (!session && !bundleSource) {
+    throw new Error("runAgent requires a Kinetica session, a bundleSource, or both.");
+  }
 
-  // Create the in-process MCP server with all 22 tools
-  // (16 diagnostic + 4 mutation + save_report + alter_table_columns)
+  // Activity spinner — signals the agent is working between user input and first
+  // response. Created before the tools so the bundle directory picker can pause it.
+  const spinner = createSpinner();
+
+  // Directory picker for kinetica_load_bundle when the agent attaches a bundle
+  // without a path: pause the spinner so the interactive prompt renders cleanly.
+  const promptForPath = async (): Promise<string | undefined> => {
+    spinner.stop();
+    return promptBundleDirectory();
+  };
+
+  // Operator confirmation when the MODEL supplies an explicit bundle path: loading
+  // indexes that directory and lets the bundle tools read files under it, so the
+  // operator must consent to the specific path. A path the operator chose via the
+  // picker (no model path) needs no second confirmation. Deny on any prompt failure
+  // (e.g. non-interactive terminal) so an unconfirmed model path is never loaded.
+  const confirmPath = async (path: string): Promise<boolean> => {
+    spinner.stop();
+    try {
+      const answer = await input({
+        message: `Load support bundle from "${path}"? The agent will be able to read files under that directory. (y/n):`,
+      });
+      return answer.trim().toLowerCase() === "y";
+    } catch {
+      return false;
+    }
+  };
+
+  // Bundle tools are ALWAYS registered (bound to the holder) so a bundle can be
+  // attached mid-session. Live tools are added only when a connection exists.
+  // Read-only BY CONSTRUCTION: mutation tools are created only in a live session,
+  // and never in a bundle-only one.
+  const bundleTools = makeBundleTools(bundleHolder, { promptForPath, confirmPath });
+  const liveTools = session
+    ? [
+        ...makeDiagnosticTools(session, catalogSchemas),
+        ...makeMutationTools(session),
+        makeAlterTableColumnsToolWithDeps(session),
+      ]
+    : [];
+  const serverTools = [...liveTools, ...bundleTools, saveReportTool];
+
+  // Allow-list = union (deduped — save_report appears in both base lists). Live
+  // mutation tools are intentionally absent so they hit the approval gate.
+  const allowedTools = [
+    ...new Set([...(session ? ALLOWED_TOOL_NAMES : []), ...BUNDLE_ALLOWED_TOOL_NAMES]),
+  ];
+
+  // Approval registry: every read-only tool that should bypass the gate. Bundle
+  // tools are all read-only; diagnostic tools too (only when a live session exists).
+  let registry = createBundleRegistry();
+  if (session) {
+    registry = DIAGNOSTIC_TOOL_NAMES.reduce(
+      (reg, name) => reg.registerReadOnlyTool(name),
+      registry,
+    );
+  }
+
+  // Live investigations can be long (diagnose + mutate + verify); bundle-only is bounded.
+  const maxTurns = session ? LIVE_MAX_TURNS : BUNDLE_MAX_TURNS;
+
+  // Create the in-process MCP server with the composed tool set.
   const server = createSdkMcpServer({
     name: MCP_SERVER_NAME,
     version: "1.0.0",
-    tools: [...diagnosticTools, ...mutationTools, saveReportTool, alterTableColumnsTool],
+    tools: serverTools,
   });
-
-  // Activity spinner — signals the agent is working between user input and first response
-  const spinner = createSpinner();
 
   // Defense-in-depth: wire canUseTool callback for any tool NOT matched by wildcard.
   // Wrap the approval gate to stop the spinner before showing interactive prompts.
-  const registry = createDiagnosticRegistry();
+  // `registry` is the mode's read-only registry (diagnostic or bundle).
   const approvalGate = createApprovalGate(registry.isReadOnlyTool);
   const canUseTool: typeof approvalGate = async (toolName, toolInput, options) => {
     spinner.stop();
@@ -435,14 +534,14 @@ export async function runAgent(
   // Build query options
   const options = {
     mcpServers: { [MCP_SERVER_NAME]: server },
-    allowedTools: ALLOWED_TOOL_NAMES,
+    allowedTools,
     disallowedTools: [...DISALLOWED_TOOLS],
     canUseTool,
     systemPrompt,
     model: effectiveModel,
     fallbackModel: "haiku" as const,
     thinking: { type: "adaptive" as const },
-    maxTurns: 100,
+    maxTurns,
     // Only impose a dollar cap for per-token billing. For OAuth subscription users
     // the SDK would otherwise cut them off at a notional dollar figure they never pay;
     // omitting it leaves the turn limit (maxTurns) as their guard.
@@ -463,14 +562,42 @@ export async function runAgent(
   // Welcome message — printed once before the interactive loop begins.
   // Model identity lives in the startup banner (see src/cli/banner.ts) so it's
   // not repeated here.
-  if (degraded) {
-    process.stderr.write("\nKinetica Diagnostic Session Ready (DEGRADED MODE)\n");
-    process.stderr.write(
-      "DB engine (port 9191) is unreachable. Only host manager tools are available.\n\n",
-    );
-    await displayDegradedStatus(session);
+  // Summarize an attached bundle for the welcome line.
+  const bundleSummary = (): string => {
+    const src = bundleHolder.get();
+    if (!src) return "";
+    const { totalFiles, ranks } = src.inventory();
+    const versionStr = kineticaVersion ? ` (version ${kineticaVersion})` : "";
+    return `${totalFiles} files, ranks: ${ranks.join(", ") || "none"}${versionStr}`;
+  };
+
+  if (session) {
+    // A live connection exists (full or degraded), optionally with a bundle attached.
+    if (degraded) {
+      process.stderr.write("\nKinetica Diagnostic Session Ready (DEGRADED MODE)\n");
+      process.stderr.write(
+        "DB engine (port 9191) is unreachable. Only host manager tools are available.\n\n",
+      );
+      await displayDegradedStatus(session);
+    } else {
+      process.stderr.write("\nKinetica Diagnostic Session Ready\n");
+    }
+    if (bundleHolder.isLoaded()) {
+      process.stderr.write(
+        `Support bundle attached: ${bundleSummary()}. Live + bundle tools available.\n`,
+      );
+    } else {
+      process.stderr.write(
+        pc.dim("Tip: ask me to analyze a support bundle to add offline log/config analysis.\n"),
+      );
+    }
   } else {
-    process.stderr.write("\nKinetica Diagnostic Session Ready\n");
+    // Bundle-only: no live connection (e.g. the cluster is down).
+    process.stderr.write("\nKinetica Diagnostic Session Ready (OFFLINE BUNDLE MODE)\n");
+    process.stderr.write(`Analyzing extracted support bundle: ${bundleSummary()}.\n`);
+    process.stderr.write(
+      "Read-only — diagnoses from captured logs/config; live verification unavailable (no DB connection).\n",
+    );
   }
   process.stderr.write(guardLine);
   process.stderr.write("Type 'exit' to end the session.\n\n");

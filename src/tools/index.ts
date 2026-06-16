@@ -101,13 +101,24 @@ export function createDiagnosticRegistry(): Registry {
 
 /**
  * Apply the standard output pipeline to a ToolResult.
- * On success: formatOutput(result.data)
+ * On success: formatOutput(result.data), prefixed with `note` when present.
  * On failure: formatOutput(result) — renders the full failure object so the agent
  *             can see HTTP status, error message, and raw response.
+ *
+ * The `note` is agent-facing guidance set alongside the data (e.g. "results capped
+ * — narrow your query", "bundle attached — ask the operator before investigating").
+ * It is prepended so it survives truncation (head lines are always kept); without
+ * this it was silently dropped and never reached the model.
  */
-export function applyOutputPipeline(result: { ok: boolean; data?: unknown }): string {
+export function applyOutputPipeline(result: {
+  ok: boolean;
+  data?: unknown;
+  note?: string;
+}): string {
   const payload = result.ok ? result.data : result;
-  return truncateOutput(formatOutput(payload));
+  const body = formatOutput(payload);
+  const withNote = result.ok && result.note ? `${result.note}\n\n${body}` : body;
+  return truncateOutput(withNote);
 }
 
 // ---------------------------------------------------------------------------

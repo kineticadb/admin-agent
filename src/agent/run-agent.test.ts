@@ -46,6 +46,7 @@ vi.mock("./load-playbooks.js", () => ({
 
 vi.mock("./load-references.js", () => ({
   loadReferences: vi.fn().mockResolvedValue([]),
+  loadBundleReferences: vi.fn().mockResolvedValue([]),
 }));
 
 const { MOCK_DIAGNOSTIC_TOOL_NAMES } = vi.hoisted(() => ({
@@ -90,6 +91,37 @@ vi.mock("../tools/index.js", () => ({
   }),
 }));
 
+const { MOCK_BUNDLE_TOOL_NAMES } = vi.hoisted(() => ({
+  MOCK_BUNDLE_TOOL_NAMES: [
+    "kinetica_load_bundle",
+    "kinetica_bundle_list_files",
+    "kinetica_bundle_log_timeline",
+    "kinetica_bundle_search_logs",
+    "kinetica_bundle_read_config",
+    "kinetica_bundle_read_sysinfo",
+  ] as const,
+}));
+
+vi.mock("../tools/bundle/index.js", () => {
+  // Chainable read-only registry stub: registerReadOnlyTool returns itself so the
+  // union-registry build in run-agent (createBundleRegistry().reduce(...)) works.
+  const makeRegistry = () => {
+    const reg = {
+      isReadOnlyTool: vi.fn().mockReturnValue(true),
+      registerReadOnlyTool: vi.fn(() => reg),
+      tools: new Set<string>(MOCK_BUNDLE_TOOL_NAMES),
+    };
+    return reg;
+  };
+  return {
+    BUNDLE_TOOL_NAMES: MOCK_BUNDLE_TOOL_NAMES,
+    makeBundleTools: vi
+      .fn()
+      .mockReturnValue(MOCK_BUNDLE_TOOL_NAMES.map((name: string) => ({ name }))),
+    createBundleRegistry: vi.fn(() => makeRegistry()),
+  };
+});
+
 const { mockCanUseTool } = vi.hoisted(() => ({
   mockCanUseTool: vi.fn(),
 }));
@@ -126,13 +158,10 @@ vi.mock("../tools/rest/host-manager.js", () => ({
 import { query, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { input } from "@inquirer/prompts";
 import { buildSystemPrompt } from "./system-prompt.js";
+import { loadBundleReferences } from "./load-references.js";
 import { discoverCatalogSchemas } from "./discover-schemas.js";
-import {
-  makeDiagnosticTools,
-  createDiagnosticRegistry,
-  makeMutationTools,
-  DIAGNOSTIC_TOOL_NAMES,
-} from "../tools/index.js";
+import { makeDiagnosticTools, makeMutationTools, DIAGNOSTIC_TOOL_NAMES } from "../tools/index.js";
+import { createBundleRegistry } from "../tools/bundle/index.js";
 import { makeSaveReportTool } from "../report/save-report.js";
 import { createApprovalGate } from "../approval/gate.js";
 
@@ -272,7 +301,7 @@ describe("explicit allowedTools", () => {
 
     const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
     // Should have 15 diagnostic + 1 save_report + 1 alter_table_columns = 17 entries
-    expect(options.allowedTools).toHaveLength(17);
+    expect(options.allowedTools).toHaveLength(23); // 15 diagnostic + save_report + alter_table_columns + 6 bundle tools
     // All diagnostic tools must be prefixed with MCP server name
     for (const name of DIAGNOSTIC_TOOL_NAMES) {
       expect(options.allowedTools).toContain(`mcp__kinetica-diagnostics__${name}`);
@@ -327,6 +356,165 @@ describe("explicit allowedTools", () => {
     for (const entry of options.allowedTools) {
       expect(entry).not.toContain("*");
     }
+  });
+});
+
+describe("bundle reference knowledge in the live prompt", () => {
+  it("loads bundle references and passes them to the prompt even with no bundle attached at startup", async () => {
+    // A bundle can be attached mid-session via kinetica_load_bundle, but the system
+    // prompt is built once. So a pure-live session must STILL load the bundle-scoped
+    // references — otherwise the agent drives the bundle tools blind after a late attach.
+    const session = makeSession();
+    const mockQueryFn = query as ReturnType<typeof vi.fn>;
+    mockQueryFn.mockReturnValue(makeQueryResult([makeResultMsg()]));
+    const mockInputFn = input as ReturnType<typeof vi.fn>;
+    mockInputFn.mockReset();
+    mockInputFn.mockResolvedValueOnce("test issue").mockResolvedValueOnce("exit");
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process, "once").mockImplementation(() => process);
+
+    const sentinel = [
+      { title: "BundleRef", category: "bundle", keywords: [], body: "x", filename: "b.md" },
+    ];
+    vi.mocked(loadBundleReferences).mockResolvedValueOnce(sentinel);
+    vi.mocked(buildSystemPrompt).mockClear();
+
+    await runAgent(session); // pure live session — NO bundleSource
+
+    expect(vi.mocked(loadBundleReferences)).toHaveBeenCalled();
+    // buildSystemPrompt(version, schemas, playbooks, refs, degraded, capability, bundleRefs)
+    // — the 7th arg must be the loaded refs, not the empty array the old code passed.
+    const call = vi.mocked(buildSystemPrompt).mock.calls[0];
+    expect(call[6]).toEqual(sentinel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Offline bundle mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal fake BundleSource. runAgent's setup only calls inventory() (welcome
+ * line) and passes the object to makeBundleTools (which captures, doesn't call),
+ * so the async readers can be inert stubs.
+ */
+function makeFakeBundleSource() {
+  return {
+    root: "/tmp/fake-bundle",
+    listFiles: () => [
+      {
+        relPath: "logs-local/core-gpudb-rolling-r0.log",
+        absPath: "/x",
+        kind: "core-log" as const,
+        rank: "r0",
+        sizeBytes: 100,
+      },
+    ],
+    inventory: () => ({
+      totalFiles: 1,
+      totalBytes: 100,
+      byKind: { "core-log": 1 },
+      ranks: ["r0"],
+      services: [],
+    }),
+    resolve: () => undefined,
+    detectVersion: async () => "7.2.3.17",
+    readConfig: async () => ({ entries: [], file: "gpudb.conf" }),
+    readSysinfo: async () => ({ blocks: [] }),
+    searchLogs: async () => ({
+      matches: [],
+      totalMatched: 0,
+      linesScanned: 0,
+      filesScanned: [],
+      capped: false,
+    }),
+    logTimeline: async () => ({ buckets: [], linesScanned: 0, totalCounted: 0, filesScanned: [] }),
+    collectionErrors: async () => [],
+  };
+}
+
+describe("offline bundle mode", () => {
+  it("uses the bundle allow-list: bundle tools + save_report, no live/mutation tools", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+
+    await runAgent(undefined, "7.2.3.17", false, "sonnet", {
+      bundleSource: makeFakeBundleSource(),
+    });
+
+    const options = mockQuery.mock.calls[0][0].options as {
+      allowedTools: string[];
+      maxTurns: number;
+    };
+    // 5 bundle tools + save_report
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_bundle_list_files");
+    expect(options.allowedTools).toContain(
+      "mcp__kinetica-diagnostics__kinetica_bundle_search_logs",
+    );
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__save_report");
+    expect(options.allowedTools).toHaveLength(7); // 6 bundle tools + save_report
+    // No live diagnostic or mutation tools
+    expect(options.allowedTools).not.toContain("mcp__kinetica-diagnostics__kinetica_health_check");
+    expect(options.allowedTools).not.toContain(
+      "mcp__kinetica-diagnostics__kinetica_admin_rebalance",
+    );
+  });
+
+  it("lowers maxTurns and skips schema discovery in bundle mode", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+    const discover = discoverCatalogSchemas as ReturnType<typeof vi.fn>;
+    discover.mockClear();
+
+    await runAgent(undefined, "7.2.3.17", false, "sonnet", {
+      bundleSource: makeFakeBundleSource(),
+    });
+
+    const options = mockQuery.mock.calls[0][0].options as { maxTurns: number };
+    expect(options.maxTurns).toBe(40);
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("uses the bundle system prompt (offline, read-only)", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+
+    await runAgent(undefined, "7.2.3.17", false, "sonnet", {
+      bundleSource: makeFakeBundleSource(),
+    });
+
+    const options = mockQuery.mock.calls[0][0].options as { systemPrompt: string };
+    expect(options.systemPrompt).toContain("OFFLINE BUNDLE MODE");
+  });
+
+  it("combines live + bundle tools when a session AND a bundle are present", async () => {
+    const { mockQuery } = setupRunAgentMocks();
+
+    await runAgent(makeSession(), "7.2.3.17", false, "sonnet", {
+      bundleSource: makeFakeBundleSource(),
+    });
+
+    const options = mockQuery.mock.calls[0][0].options as {
+      allowedTools: string[];
+      maxTurns: number;
+    };
+    // Both tool families are allowed in one session.
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_health_check");
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_bundle_list_files");
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_load_bundle");
+    // Live mutations still excluded (approval gate); live turn limit applies.
+    expect(options.allowedTools).not.toContain(
+      "mcp__kinetica-diagnostics__kinetica_admin_rebalance",
+    );
+    expect(options.maxTurns).toBe(100);
+    // A preloaded bundle marks the live prompt's capability section "attached"
+    // and injects the bundle-scoped references (7th arg) into that prompt.
+    expect(buildSystemPrompt).toHaveBeenCalledWith(
+      "7.2.3.17",
+      undefined,
+      [],
+      [],
+      false,
+      "attached",
+      [],
+    );
   });
 });
 
@@ -863,7 +1051,7 @@ describe("runAgent", () => {
     expect(callArgs.name).toBe("kinetica-diagnostics");
   });
 
-  it("creates MCP server with 20 tools (15 diagnostic + 3 mutation + save_report + alter_table_columns)", async () => {
+  it("creates MCP server with 26 tools (19 live + 6 bundle + save_report)", async () => {
     const session = makeSession();
     await runAgent(session);
     const callArgs = mockCreateSdkMcpServer.mock.calls[0][0] as {
@@ -871,7 +1059,7 @@ describe("runAgent", () => {
       version: string;
       tools: unknown[];
     };
-    expect(callArgs.tools).toHaveLength(20);
+    expect(callArgs.tools).toHaveLength(26);
   });
 
   it("calls makeMutationTools with the session", async () => {
@@ -912,27 +1100,59 @@ describe("runAgent", () => {
     vi.mocked(discoverCatalogSchemas).mockResolvedValueOnce(mockSchemas);
     const session = makeSession();
     await runAgent(session);
-    expect(buildSystemPrompt).toHaveBeenCalledWith(undefined, mockSchemas, [], [], undefined);
+    expect(buildSystemPrompt).toHaveBeenCalledWith(
+      undefined,
+      mockSchemas,
+      [],
+      [],
+      undefined,
+      "available",
+      [],
+    );
   });
 
   it("calls buildSystemPrompt with undefined schemas when discovery fails", async () => {
     vi.mocked(discoverCatalogSchemas).mockResolvedValueOnce(undefined);
     const session = makeSession();
     await runAgent(session);
-    expect(buildSystemPrompt).toHaveBeenCalledWith(undefined, undefined, [], [], undefined);
+    expect(buildSystemPrompt).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      [],
+      [],
+      undefined,
+      "available",
+      [],
+    );
   });
 
   it("passes kineticaVersion to buildSystemPrompt when provided", async () => {
     const session = makeSession();
     await runAgent(session, "7.2.3.11");
-    expect(buildSystemPrompt).toHaveBeenCalledWith("7.2.3.11", undefined, [], [], undefined);
+    expect(buildSystemPrompt).toHaveBeenCalledWith(
+      "7.2.3.11",
+      undefined,
+      [],
+      [],
+      undefined,
+      "available",
+      [],
+    );
   });
 
   it("skips discoverCatalogSchemas when degraded is true", async () => {
     const session = makeSession();
     await runAgent(session, "7.2.3.11", true);
     expect(discoverCatalogSchemas).not.toHaveBeenCalled();
-    expect(buildSystemPrompt).toHaveBeenCalledWith("7.2.3.11", undefined, [], [], true);
+    expect(buildSystemPrompt).toHaveBeenCalledWith(
+      "7.2.3.11",
+      undefined,
+      [],
+      [],
+      true,
+      "available",
+      [],
+    );
   });
 
   it("prints DEGRADED MODE welcome message with HM status when degraded", async () => {
@@ -981,10 +1201,12 @@ describe("runAgent", () => {
     expect(createApprovalGate).toHaveBeenCalledOnce();
   });
 
-  it("creates canUseTool from diagnostic registry", async () => {
+  it("builds the approval registry (bundle base + diagnostic read-only names) and wires the gate", async () => {
     const session = makeSession();
     await runAgent(session);
-    expect(createDiagnosticRegistry).toHaveBeenCalledOnce();
+    // The union registry starts from createBundleRegistry() and adds the diagnostic
+    // read-only names; createApprovalGate wraps its isReadOnlyTool.
+    expect(createBundleRegistry).toHaveBeenCalledOnce();
     expect(createApprovalGate).toHaveBeenCalledOnce();
   });
 
@@ -993,7 +1215,7 @@ describe("runAgent", () => {
     await runAgent(session);
     const options = mockQuery.mock.calls[0][0].options as { allowedTools: string[] };
     // 15 diagnostic + 1 save_report + 1 alter_table_columns = 17, no wildcards
-    expect(options.allowedTools).toHaveLength(17);
+    expect(options.allowedTools).toHaveLength(23); // 15 diagnostic + save_report + alter_table_columns + 6 bundle tools
     expect(options.allowedTools.some((t: string) => t.includes("*"))).toBe(false);
     expect(options.allowedTools.some((t: string) => t.includes("mutation"))).toBe(false);
   });

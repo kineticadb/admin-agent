@@ -8,11 +8,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { loadReferences } from "./load-references.js";
+import { loadReferences, loadBundleReferences } from "./load-references.js";
 
 // ---------------------------------------------------------------------------
 // loadReferences
@@ -138,5 +138,47 @@ A`,
     // It may find 0 or more references depending on what's in knowledge/references/.
     const refs = await loadReferences();
     expect(Array.isArray(refs)).toBe(true);
+  });
+
+  it("does not descend into the bundle/ subdirectory (bundle refs stay scoped)", async () => {
+    await writeFile(join(tmpDir, "general.md"), `---\ntitle: General\n---\n\nGeneral body`);
+    await mkdir(join(tmpDir, "bundle"), { recursive: true });
+    await writeFile(join(tmpDir, "bundle", "scoped.md"), `---\ntitle: Scoped\n---\n\nScoped body`);
+
+    const refs = await loadReferences(tmpDir);
+    expect(refs.map((r) => r.title)).toEqual(["General"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadBundleReferences
+// ---------------------------------------------------------------------------
+
+describe("loadBundleReferences", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "bundle-refs-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("loads bundle-scoped references from the given directory", async () => {
+    await writeFile(
+      join(tmpDir, "support-bundle.md"),
+      `---\ntitle: Support Bundle Layout & Parsing\ncategory: bundle\n---\n\nLog line format body`,
+    );
+
+    const refs = await loadBundleReferences(tmpDir);
+    expect(refs).toHaveLength(1);
+    expect(refs[0].title).toBe("Support Bundle Layout & Parsing");
+    expect(refs[0].body).toContain("Log line format body");
+  });
+
+  it("returns the real bundle reference from the default path", async () => {
+    const refs = await loadBundleReferences();
+    expect(refs.some((r) => /Support Bundle/i.test(r.title))).toBe(true);
   });
 });

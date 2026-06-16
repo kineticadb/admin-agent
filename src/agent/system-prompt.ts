@@ -20,6 +20,7 @@ import type { CatalogSchemas } from "./discover-schemas.js";
 import type { Playbook, Reference } from "../types/index.js";
 import { BUILDER_REGISTRY } from "./diagnostic-sql.js";
 import { buildEvidenceChecklist } from "../tools/catalog.js";
+import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
 import { REPORT_TEMPLATE } from "./report-template.js";
 
 // ---------------------------------------------------------------------------
@@ -58,40 +59,6 @@ function buildDiagnosticSqlSection(schemas?: CatalogSchemas): string {
 }
 
 // ---------------------------------------------------------------------------
-// Failure patterns section builder (from playbook files)
-// ---------------------------------------------------------------------------
-
-/**
- * Format loaded playbooks into the "Common Failure Patterns" prompt section.
- * Each playbook's title becomes a bold heading, followed by its markdown body.
- * Returns empty string when no playbooks are available.
- */
-function buildFailurePatternsSection(playbooks?: readonly Playbook[]): string {
-  if (!playbooks || playbooks.length === 0) return "";
-
-  const entries = playbooks.map((p) => `**${p.title}:**\n\n${p.body}`).join("\n\n");
-
-  return `### Common Failure Patterns\n\n${entries}`;
-}
-
-// ---------------------------------------------------------------------------
-// Reference knowledge section builder (from reference files)
-// ---------------------------------------------------------------------------
-
-/**
- * Format loaded references into the "Reference Knowledge" prompt section.
- * Each reference's title becomes a bold heading, followed by its markdown body.
- * Returns empty string when no references are available.
- */
-function buildReferenceSection(references?: readonly Reference[]): string {
-  if (!references || references.length === 0) return "";
-
-  const entries = references.map((r) => `**${r.title}:**\n\n${r.body}`).join("\n\n");
-
-  return `### Reference Knowledge\n\n${entries}`;
-}
-
-// ---------------------------------------------------------------------------
 // Main prompt builder
 // ---------------------------------------------------------------------------
 
@@ -109,6 +76,15 @@ function buildReferenceSection(references?: readonly Reference[]): string {
  *   When provided, their content replaces the "Common Failure Patterns" section.
  * @param references - Optional loaded references from knowledge/references/.
  *   When provided, their content is included in a "Reference Knowledge" section.
+ * @param degraded - When true, injects the DEGRADED MODE section (DB engine down).
+ * @param bundleCapability - Offline support-bundle capability available in this
+ *   live session: "attached" (a bundle is already loaded — correlate it against
+ *   live state), "available" (none loaded yet — can be attached via
+ *   kinetica_load_bundle), or undefined (bundle tools not present).
+ * @param bundleReferences - Optional bundle-scoped references (log-line format,
+ *   severity ordering, file catalog). Injected into the Support Bundle Capability
+ *   section so a live session with a bundle attached has the same parsing
+ *   knowledge bundle-only mode receives (e.g. that min_severity=ERROR drops UERR).
  */
 export function buildSystemPrompt(
   kineticaVersion?: string,
@@ -116,6 +92,8 @@ export function buildSystemPrompt(
   playbooks?: readonly Playbook[],
   references?: readonly Reference[],
   degraded?: boolean,
+  bundleCapability?: "attached" | "available",
+  bundleReferences?: readonly Reference[],
 ): string {
   const versionSection = kineticaVersion
     ? `**Kinetica Version:** ${kineticaVersion} (provided at session start)`
@@ -155,6 +133,31 @@ export function buildSystemPrompt(
 
 `
     : "";
+
+  const bundleSection =
+    bundleCapability === undefined
+      ? ""
+      : `
+---
+
+## Support Bundle Capability
+
+${
+  bundleCapability === "attached"
+    ? `A Kinetica support bundle (offline ${t}gpudb_sysinfo${t} snapshot) IS attached to this session. You now have **two complementary evidence sources**:
+- **The bundle** (${t}kinetica_bundle_*${t} tools) — frozen point-in-time history: per-rank logs (the incident narrative the live endpoints can't show), gpudb.conf at capture time, and host diagnostics. Call ${t}kinetica_bundle_list_files${t} first, then ${t}kinetica_bundle_log_timeline${t}.
+- **The live system** (the live diagnostic tools) — current state, right now.`
+    : `The operator can attach an offline Kinetica support bundle for analysis. If they ask to "analyze a support bundle" (or you need historical logs the live endpoints don't expose — Kinetica has no log endpoint), call ${t}kinetica_load_bundle${t} **with no path** — they will be shown an interactive directory picker to choose the bundle. Do NOT ask for the path in chat. The ${t}kinetica_bundle_*${t} tools then read its logs/config/host-diagnostics.
+
+**Attaching a bundle is SETUP, not an investigation.** After ${t}kinetica_load_bundle${t} succeeds, do NOT start gathering evidence. Confirm what the operator wants to investigate first (briefly note the bundle is ready), then wait for their answer before calling any ${t}kinetica_bundle_*${t} tools. Do not waste turns investigating something they did not ask about.`
+}
+
+**Correlate the two:** the bundle tells you what HAPPENED (e.g. a crash, an error spike, config at capture time); the live tools tell you what is TRUE NOW (did it recover? is the config still drifted? did the issue recur?). Use the bundle for the historical narrative and the live tools to verify current state. Note in the report which findings came from the bundle (and its capture time) versus the live system.
+${
+  bundleReferences && bundleReferences.length > 0
+    ? `\n${buildReferenceSection(bundleReferences)}\n`
+    : ""
+}`;
 
   return (
     `You are an expert Kinetica GPU database administrator and diagnostician with deep knowledge of Kinetica's internals, system tables, REST API, and common failure patterns. Your job is to autonomously investigate database issues reported by operators, gather diagnostic evidence, reason over that evidence to identify root causes, and produce a structured diagnostic report with actionable remediation steps.
@@ -286,7 +289,7 @@ ${t}kinetica_show_table${t} (e.g., ${t}is_shard_key${t}, ${t}is_primary_key${t},
 ${buildFailurePatternsSection(playbooks)}
 
 ${buildReferenceSection(references)}
-
+${bundleSection}
 ---
 
 ## Analysis Instructions
@@ -343,10 +346,14 @@ Include specific, actionable remediation steps tied to your findings. Structure 
 
 ## Post-Report Behavior
 
-1. Call the ${t}save_report${t} tool with the complete report markdown content to save it to disk.
-2. After the report is saved, ask: "Would you like to investigate another issue, or end the session?"
-3. If the operator wants another investigation, start fresh with the same 5-round protocol.
-4. On session end: summarize all issues investigated and list the saved report file paths, then exit.
+1. Present the finished report in your response so the operator can read it.
+2. **Ask BEFORE saving — never save unprompted.** After presenting the report, ask exactly: "Would you like me to save this report to disk? (yes/no)" and then STOP — end your turn and wait for the operator's answer. Do NOT call ${t}save_report${t} in the same turn as the question; the question must come first.
+   - If the operator answers yes → call ${t}save_report${t} with the complete report markdown content.
+   - If the operator answers no → do not save; acknowledge and continue.
+   - **Only exception:** when checkpointing under budget pressure (the operator warned the budget guard is approaching, or you are preserving work with a ${t}partial: true${t} report before an early cutoff), save immediately WITHOUT asking — preserving findings outweighs the prompt.
+3. After saving (or after the operator declines), ask: "Would you like to investigate another issue, or end the session?"
+4. If the operator wants another investigation, start fresh with the same 5-round protocol.
+5. On session end: summarize all issues investigated and list the saved report file paths, then exit.
 
 ---
 
