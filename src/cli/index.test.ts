@@ -1,5 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { printBanner } from "./banner.js";
+import { chooseBundleSessionVersion } from "./index.js";
+
+describe("chooseBundleSessionVersion", () => {
+  it("prefers the bundle's captured version over a reachable live cluster's", () => {
+    // Frozen evidence must be labeled with the version it was captured at — even if the
+    // best-effort live cross-check reaches a since-upgraded cluster, version quirks must
+    // follow the evidence the agent is actually reasoning over.
+    expect(chooseBundleSessionVersion("7.1.9.0", "7.2.3.17")).toBe("7.1.9.0");
+  });
+
+  it("falls back to the live version when the bundle has no detectable version", () => {
+    expect(chooseBundleSessionVersion(undefined, "7.2.3.17")).toBe("7.2.3.17");
+  });
+
+  it("returns undefined when neither version is known", () => {
+    expect(chooseBundleSessionVersion(undefined, undefined)).toBeUndefined();
+  });
+});
 
 describe("printBanner", () => {
   let stderrOutput: string[] = [];

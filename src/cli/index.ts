@@ -5,7 +5,8 @@ import { getVersion } from "./version.js";
 import { authenticateAnthropic } from "../auth/preflight.js";
 import { logout } from "../auth/logout.js";
 import { loadEnvFile } from "../session/env-file.js";
-import { connectWithRetry } from "../session/verify.js";
+import { connectWithRetry, connectBestEffort } from "../session/verify.js";
+import { verifyBundle } from "../bundle/verify-bundle.js";
 import { runAgent, SUPPORTED_MODELS, DEFAULT_AGENT_MODEL } from "../agent/run-agent.js";
 import type { AgentModel } from "../agent/run-agent.js";
 import { resolveMaxBudgetUsd, isValidBudget } from "../agent/session-budget.js";
@@ -15,6 +16,31 @@ export let verbose = false;
 
 // Session established during startup — used by agent loop in Phase 3
 let session: KineticaSession | undefined;
+
+/**
+ * Value of a `--name=value` flag, or undefined if the flag is absent. Splits on
+ * the FIRST `=` only, so values containing `=` (paths, org UUIDs) survive intact —
+ * `arg.split("=")[1]` would truncate them at the first `=`.
+ */
+function flagValue(args: readonly string[], name: string): string | undefined {
+  const prefix = `${name}=`;
+  const arg = args.find((a) => a.startsWith(prefix));
+  return arg === undefined ? undefined : arg.slice(prefix.length);
+}
+
+/**
+ * Version to label a bundle session. Prefer the bundle's CAPTURED version — it's the
+ * era of the frozen logs/config the agent reasons over, so version-specific quirks must
+ * follow it. Fall back to the best-effort live probe's version only when the bundle has
+ * none (the live cross-check may reach a since-upgraded cluster; labeling frozen evidence
+ * with that version would misapply quirks).
+ */
+export function chooseBundleSessionVersion(
+  bundleVersion?: string,
+  liveVersion?: string,
+): string | undefined {
+  return bundleVersion ?? liveVersion;
+}
 
 function printHelp(): void {
   const lines = [
@@ -36,6 +62,7 @@ function printHelp(): void {
     "    --logout              Log out from Anthropic account and exit",
     `    --model=NAME          Override agent model (${SUPPORTED_MODELS.join(" | ")}); default: sonnet`,
     "    --max-budget=USD      Per-session budget cap in USD (API-key billing only); default: 5.00",
+    "    --bundle=PATH         Offline mode: diagnose from an extracted support bundle directory",
     "",
     "  Environment variables:",
     "    ANTHROPIC_API_KEY      Anthropic API key (if not set, OAuth login via browser is used)",
@@ -74,14 +101,11 @@ export async function main(): Promise<void> {
 
   // Parse OAuth login flags
   const forceLogin = args.includes("--login");
-  const loginMethodArg = args.find((a) => a.startsWith("--login-method="));
-  const loginMethod = loginMethodArg?.split("=")[1] as "claudeai" | "console" | undefined;
-  const loginOrgArg = args.find((a) => a.startsWith("--login-org="));
-  const loginOrgUUID = loginOrgArg?.split("=")[1];
+  const loginMethod = flagValue(args, "--login-method") as "claudeai" | "console" | undefined;
+  const loginOrgUUID = flagValue(args, "--login-org");
 
   // Parse --model flag; validated against SUPPORTED_MODELS so runAgent can trust the value.
-  const modelArg = args.find((a) => a.startsWith("--model="));
-  const modelValue = modelArg?.split("=")[1];
+  const modelValue = flagValue(args, "--model");
   let model: AgentModel | undefined;
   if (modelValue !== undefined) {
     if ((SUPPORTED_MODELS as readonly string[]).includes(modelValue)) {
@@ -98,8 +122,7 @@ export async function main(): Promise<void> {
 
   // Parse --max-budget flag; must be a positive finite number. Reject bad input loudly
   // (the user typed it now) — env/default fallback is handled by resolveMaxBudgetUsd.
-  const budgetArg = args.find((a) => a.startsWith("--max-budget="));
-  const budgetValue = budgetArg?.split("=")[1];
+  const budgetValue = flagValue(args, "--max-budget");
   let maxBudgetFlag: number | undefined;
   if (budgetValue !== undefined) {
     const parsed = Number(budgetValue);
@@ -113,6 +136,21 @@ export async function main(): Promise<void> {
       return;
     }
     maxBudgetFlag = parsed;
+  }
+
+  // Parse --bundle flag: offline mode against an extracted support bundle directory.
+  // An explicit-but-empty value (`--bundle=`, e.g. an unset shell var) is a mistake,
+  // not a request for bundle mode — reject it loudly rather than entering bundle mode
+  // with an empty path (which would stat("") and exit with a confusing message).
+  const bundlePath = flagValue(args, "--bundle");
+  if (bundlePath?.trim() === "") {
+    process.stderr.write(
+      pc.red(
+        "Error: --bundle requires a directory path, e.g. --bundle=/path/to/extracted-bundle\n",
+      ),
+    );
+    process.exitCode = 1;
+    return;
   }
 
   loadEnvFile();
@@ -149,6 +187,66 @@ export async function main(): Promise<void> {
 
   // Resolve the effective budget: --max-budget flag > ADMIN_AGENT_MAX_BUDGET env > default.
   const maxBudgetUsd = resolveMaxBudgetUsd(maxBudgetFlag);
+
+  // Bundle entry point: validate the bundle, then attempt a best-effort live
+  // connection so the agent can cross-check frozen evidence against current state.
+  // The bundle is the guaranteed source; live is attached only if reachable
+  // (the cluster is often down — that's why a bundle exists).
+  if (bundlePath !== undefined) {
+    const result = await verifyBundle(bundlePath);
+    if (!result.ok) {
+      process.stderr.write(pc.red(`Error: ${result.error}\n`));
+      process.exitCode = 1;
+      return;
+    }
+    if (result.missingExpected.length > 0) {
+      process.stderr.write(
+        pc.yellow(
+          `Warning: bundle is missing expected artifact(s): ${result.missingExpected.join(", ")}. ` +
+            `Diagnosing with what is present.\n`,
+        ),
+      );
+    }
+
+    const live = await connectBestEffort();
+    process.stderr.write(
+      live
+        ? pc.dim("Live connection available — bundle + live verification enabled.\n")
+        : pc.dim("No reachable live connection — offline bundle analysis only.\n"),
+    );
+
+    // Label the session with the bundle's captured version (the evidence the agent
+    // reasons over), not the live probe's — and warn if a reachable live cluster
+    // reports a DIFFERENT version (it may have been upgraded since the bundle's capture).
+    if (
+      live?.kineticaVersion &&
+      result.kineticaVersion &&
+      live.kineticaVersion !== result.kineticaVersion
+    ) {
+      process.stderr.write(
+        pc.yellow(
+          `Warning: live cluster version (${live.kineticaVersion}) differs from the bundle's ` +
+            `captured version (${result.kineticaVersion}). Reasoning over the bundle uses the ` +
+            `captured version; the live cluster may have been upgraded since capture.\n`,
+        ),
+      );
+    }
+
+    // connectBestEffort never enters degraded mode (it only attaches when the DB
+    // engine on 9191 answers), so degraded is always false here.
+    await runAgent(
+      live?.session,
+      chooseBundleSessionVersion(result.kineticaVersion, live?.kineticaVersion),
+      false,
+      model,
+      {
+        authMethod: authResult.method,
+        maxBudgetUsd,
+        bundleSource: result.bundleSource,
+      },
+    );
+    return;
+  }
 
   const { session: connectedSession, kineticaVersion, degraded } = await connectWithRetry();
   session = connectedSession;

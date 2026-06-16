@@ -14,6 +14,14 @@ const MAX_REPROMPTS = 2;
 /** Default Kinetica host manager port — hardcoded for degraded mode (cannot discover via 9191). */
 const DEFAULT_HM_PORT = 9300;
 
+/**
+ * Request timeout for the bundle-mode best-effort probe. Much shorter than the
+ * session default (30s) so a host that TCP-accepts but whose DB engine is wedged
+ * — the common "cluster is down" case a bundle exists to diagnose — can't freeze
+ * startup. On success the probe is discarded and a normal-timeout session is used.
+ */
+const BEST_EFFORT_PROBE_TIMEOUT_MS = 5_000;
+
 export type ConnectResult = {
   readonly session: KineticaSession;
   readonly kineticaVersion: string | undefined;
@@ -118,6 +126,42 @@ export function isCredentialError(errorMessage: string): boolean {
  *
  * Returns the session, Kinetica version (if detected), and degraded flag.
  */
+/**
+ * Best-effort, non-interactive live connection for bundle mode.
+ *
+ * Bundle analysis often wants to cross-check frozen evidence against the live
+ * system, but the cluster may be unreachable (often the very reason a bundle
+ * exists). So this attaches a live session only when it can do so silently:
+ * credentials must already be in the environment (no prompting), the URL must
+ * resolve, and the DB engine must answer. Any miss returns `undefined` and the
+ * caller continues bundle-only. Never prompts, never exits, never throws.
+ */
+export async function connectBestEffort(): Promise<ConnectResult | undefined> {
+  const url = process.env.KINETICA_URL;
+  const user = process.env.KINETICA_USER;
+  const pass = process.env.KINETICA_PASS;
+  if (!url || !user || !pass) return undefined;
+
+  try {
+    // nonInteractive: this is a silent best-effort probe — resolveUrl must never
+    // pop the HTTP-downgrade confirmation prompt (it would block bundle startup).
+    const resolved = await resolveUrl(url, { nonInteractive: true });
+    if (!resolved.ok) return undefined;
+
+    // Probe with a short timeout so a wedged DB engine can't freeze startup for
+    // the full 30s default. On success, hand back a normal-timeout session for
+    // the agent to use for live cross-checks (which can run heavier queries).
+    const probe = createSession(resolved.url, user, pass, {
+      timeoutMs: BEST_EFFORT_PROBE_TIMEOUT_MS,
+    });
+    const kineticaVersion = await verifyConnectivity(probe);
+    const session = createSession(resolved.url, user, pass);
+    return { session, kineticaVersion, degraded: false };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function connectWithRetry(): Promise<ConnectResult> {
   const { credentials, prompted } = await collectCredentials();
 

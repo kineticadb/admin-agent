@@ -14,6 +14,15 @@ export type ResolveUrlResult =
   | { readonly ok: true; readonly url: string }
   | { readonly ok: false; readonly error: string };
 
+export interface ResolveUrlOptions {
+  /**
+   * Force non-interactive behavior even in a TTY: never show the HTTP-downgrade
+   * confirmation prompt — refuse the fallback as if stdin were not a terminal.
+   * Used by best-effort, silent callers (e.g. bundle mode) that must never block.
+   */
+  readonly nonInteractive?: boolean;
+}
+
 /**
  * Returns true if the input starts with http:// or https:// (case-insensitive).
  * Pure function — no I/O.
@@ -96,7 +105,10 @@ async function confirmHttpFallback(host: string): Promise<boolean> {
  *
  * Never throws.
  */
-export async function resolveUrl(input: string): Promise<ResolveUrlResult> {
+export async function resolveUrl(
+  input: string,
+  options: ResolveUrlOptions = {},
+): Promise<ResolveUrlResult> {
   const trimmed = input.trim();
   if (trimmed === "") {
     return { ok: false, error: "URL is empty" };
@@ -146,8 +158,9 @@ export async function resolveUrl(input: string): Promise<ResolveUrlResult> {
   }
 
   // HTTPS failed, HTTP would succeed — this is a credential-downgrade moment.
-  // Non-interactive environments cannot consent; refuse by default.
-  if (!isInteractive()) {
+  // Non-interactive environments (or callers that opt out of prompting) cannot
+  // consent; refuse by default.
+  if (options.nonInteractive || !isInteractive()) {
     return {
       ok: false,
       error:

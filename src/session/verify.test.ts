@@ -40,6 +40,7 @@ import { confirm } from "@inquirer/prompts";
 import {
   verifyConnectivity,
   connectWithRetry,
+  connectBestEffort,
   extractVersion,
   extractVersionFromHostManager,
   probeHostManager,
@@ -771,5 +772,105 @@ describe("probeHostManager", () => {
 
     await probeHostManager(session);
     expect(mockPort).toHaveBeenCalledWith(9300, "/", undefined);
+  });
+});
+
+describe("connectBestEffort", () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.KINETICA_URL;
+    delete process.env.KINETICA_USER;
+    delete process.env.KINETICA_PASS;
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("returns undefined when credentials are not all in the environment", async () => {
+    process.env.KINETICA_URL = "http://kinetica:9191";
+    // user and pass missing
+    expect(await connectBestEffort()).toBeUndefined();
+    expect(mockResolveUrl).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined (never throws) when the host is unreachable", async () => {
+    process.env.KINETICA_URL = "kinetica:9191";
+    process.env.KINETICA_USER = "admin";
+    process.env.KINETICA_PASS = "secret";
+    mockResolveUrl.mockResolvedValue({ ok: true, url: "http://kinetica:9191" });
+    mockCreateSession.mockReturnValue({
+      baseUrl: "http://kinetica:9191",
+      makeRequest: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+    });
+
+    expect(await connectBestEffort()).toBeUndefined();
+  });
+
+  it("attaches a live session when env creds resolve and the DB engine answers", async () => {
+    process.env.KINETICA_URL = "kinetica:9191";
+    process.env.KINETICA_USER = "admin";
+    process.env.KINETICA_PASS = "secret";
+    mockResolveUrl.mockResolvedValue({ ok: true, url: "http://kinetica:9191" });
+    const body = JSON.stringify({
+      data_str: JSON.stringify({ status_map: { system: JSON.stringify({ version: "7.2.3.17" }) } }),
+    });
+    mockCreateSession.mockReturnValue({
+      baseUrl: "http://kinetica:9191",
+      makeRequest: vi.fn().mockResolvedValue(new Response(body, { status: 200 })),
+    });
+
+    const result = await connectBestEffort();
+    expect(result).toBeDefined();
+    expect(result?.degraded).toBe(false);
+    expect(result?.kineticaVersion).toBe("7.2.3.17");
+  });
+
+  it("returns undefined when URL resolution fails", async () => {
+    process.env.KINETICA_URL = "ftp://bad";
+    process.env.KINETICA_USER = "admin";
+    process.env.KINETICA_PASS = "secret";
+    mockResolveUrl.mockResolvedValue({ ok: false, error: "unsupported scheme" });
+
+    expect(await connectBestEffort()).toBeUndefined();
+  });
+
+  it("probes with a short timeout so a wedged DB engine can't freeze startup", async () => {
+    process.env.KINETICA_URL = "kinetica:9191";
+    process.env.KINETICA_USER = "admin";
+    process.env.KINETICA_PASS = "secret";
+    mockResolveUrl.mockResolvedValue({ ok: true, url: "http://kinetica:9191" });
+    const body = JSON.stringify({
+      data_str: JSON.stringify({ status_map: { system: JSON.stringify({ version: "7.2.3.17" }) } }),
+    });
+    mockCreateSession.mockReturnValue({
+      baseUrl: "http://kinetica:9191",
+      makeRequest: vi.fn().mockResolvedValue(new Response(body, { status: 200 })),
+    });
+
+    await connectBestEffort();
+
+    // The probe session is created with a bounded timeout (not the 30s default).
+    expect(mockCreateSession).toHaveBeenCalledWith(
+      "http://kinetica:9191",
+      "admin",
+      "secret",
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it("resolves the URL non-interactively so it can never block on a prompt", async () => {
+    // The whole point of best-effort is to stay silent. resolveUrl must be told
+    // not to pop the HTTP-downgrade confirmation prompt, even in a TTY.
+    process.env.KINETICA_URL = "kinetica:9191";
+    process.env.KINETICA_USER = "admin";
+    process.env.KINETICA_PASS = "secret";
+    mockResolveUrl.mockResolvedValue({ ok: false, error: "HTTPS unavailable, non-interactive" });
+
+    await connectBestEffort();
+
+    expect(mockResolveUrl).toHaveBeenCalledWith("kinetica:9191", { nonInteractive: true });
   });
 });
