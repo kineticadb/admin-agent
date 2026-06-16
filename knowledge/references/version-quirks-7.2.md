@@ -81,8 +81,13 @@ The schema uses these names (not the "obvious" SQL-standard names):
   sizes. For a real table listing with sizes, query
   `ki_catalog.ki_objects` via SQL instead.
 - **`/admin/show/logs`** is not implemented on 7.2.x — returns 404
-  "Unknown URI". The `kinetica_get_logs` tool falls back to SQL against
-  `ki_catalog.ki_log`.
+  "Unknown URI". There is no system log table to query either (7.2.x has
+  no `ki_catalog` logs table). For query-level diagnostics use
+  `ki_catalog.ki_query_history` (slow/failed queries with error_message)
+  or `ki_catalog.ki_query_span_metrics_all` (operation-level events) via
+  `kinetica_execute_sql`. For raw application/rank logs, analyze an
+  offline support bundle (`--bundle`) — the live system exposes no log
+  endpoint.
 
 ## Default Resource Groups
 

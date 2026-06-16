@@ -3,7 +3,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 
-AI-powered diagnostic agent for [Kinetica](https://www.kinetica.com/) GPU databases. Connects to a live instance, autonomously investigates issues using 22 tools, and produces structured markdown reports with evidence-backed findings and actionable remediation.
+AI-powered diagnostic agent for [Kinetica](https://www.kinetica.com/) GPU databases. Connects to a live instance — or analyzes an extracted offline support bundle, or both at once — autonomously investigates issues across 28 tools, and produces structured markdown reports with evidence-backed findings and actionable remediation.
 
 Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk).
 
@@ -17,6 +17,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
   - [🔑 Authentication](#authentication)
   - [💰 Session Budget](#session-budget)
   - [⚠️ Degraded Mode](#degraded-mode)
+  - [📦 Offline Bundle Mode](#offline-bundle-mode)
 - [🖥️ CLI Flags](#cli-flags)
 - [🧰 Tools](#tools)
   - [💓 System Health & Monitoring](#system-health--monitoring)
@@ -26,6 +27,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
   - [🗃️ SQL Execution (read-only)](#sql-execution-read-only)
   - [✏️ Administrative Mutations (require approval)](#administrative-mutations-require-approval)
   - [🔀 Batch Column Alter (self-approving)](#batch-column-alter-self-approving)
+  - [📦 Offline Bundle Analysis (read-only)](#offline-bundle-analysis-read-only)
   - [📑 Reporting](#reporting)
 - [🔒 Security](#security)
 - [📚 Contributing Diagnostic Knowledge](#contributing-diagnostic-knowledge)
@@ -45,7 +47,8 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
 **Key capabilities:**
 
 - Autonomous multi-round investigation with parallel tool calls
-- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 tools total**
+- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 live tools**, plus 6 offline bundle-analysis tools = **28 total**
+- **Offline support-bundle analysis** — diagnose from an extracted `gpudb_sysinfo` bundle (per-rank logs, `gpudb.conf`, host diagnostics) with no live connection, or attach a bundle alongside a live session to cross-check captured history against current state
 - Expert knowledge via pluggable playbooks (no code required to add new ones)
 - Schema-aware SQL — discovers actual column names at startup, never guesses
 - HTTPS-first URL resolution with explicit consent required before any HTTP fallback
@@ -99,6 +102,8 @@ Round 5 — Verification
 ```
 
 Each round uses multiple tools in parallel where possible. The agent names specific hypotheses, ties every conclusion to evidence, and never gives vague or generic advice.
+
+In [offline bundle mode](#offline-bundle-mode) (no live connection) the protocol shortens to read-only **diagnose → report**: the agent has no DB engine to mutate against or re-query, so Rounds 4–5 (remediation and verification) are dropped. When a bundle is attached _alongside_ a live connection, the full 5-round protocol applies and the agent can correlate the bundle's frozen evidence (what happened) against current live state (what's true now).
 
 ### Example Report Output
 
@@ -154,7 +159,7 @@ wasting ~28.7 MB as raw storage. Both issues have been remediated.
 ## Prerequisites
 
 - **Node.js 20+**
-- **Kinetica 7.2.x or later** — network-accessible URL (default port 9191)
+- **Kinetica 7.2.x or later** — network-accessible URL (default port 9191); _not required for offline [`--bundle`](#offline-bundle-mode) analysis_
 - **Anthropic API key** or **OAuth login** (Claude Pro/Max or Console account)
 
 ## Configuration
@@ -220,6 +225,24 @@ The active guard is printed at startup, and the session summary reports per-inve
 
 If the DB engine on port 9191 is unreachable after 3 retries, the agent probes the host manager on port 9300. If it responds, the agent starts in **degraded mode** — only `kinetica_host_manager_status` provides useful data (version, license, per-rank process status). If both ports are unreachable, the agent exits with code 1.
 
+### Offline Bundle Mode
+
+When a cluster is down (or you're diagnosing after the fact), the live endpoints can't tell you what happened — but a `gpudb_sysinfo` **support bundle** can. It captures the evidence the live API never exposes: per-rank logs, the real on-disk `gpudb.conf`, and host-level diagnostics (memory, GPU, disk, process args). Point the agent at an **extracted** bundle directory to diagnose entirely offline:
+
+```bash
+admin-agent --bundle=/path/to/extracted-gpudb_sysinfo
+```
+
+The bundle must be **extracted first** — passing a `.tgz`/`.tar.gz` fails fast with an extract-first message. At startup the agent validates the directory, detects the Kinetica version, and prints an inventory (files by kind, ranks present); missing expected artifacts (e.g. no config, no core logs) are a non-fatal warning, mirroring degraded mode's "diagnose with what's present" philosophy.
+
+A bundle and a live connection are **composable capabilities, not exclusive modes**:
+
+- **Bundle only** (cluster unreachable) — the agent runs read-only and is bounded to 40 turns. Mutation tools are never even constructed, so offline analysis is read-only _by construction_.
+- **Bundle + live** — when `--bundle` is given, the agent still attempts a best-effort, env-only live connection (no prompts, no exit). If the cluster answers, you get both tool sets and the agent correlates the bundle's frozen history against current live state. If not, it continues bundle-only.
+- **Attach mid-session** — in any live session you can ask the agent to analyze a support bundle. It calls `kinetica_load_bundle` _without a path_, which opens an interactive directory picker for you to select the extracted bundle; the offline tools light up immediately. (If the agent instead proposes a specific path, you're asked to confirm it first — loading a directory lets the agent read files under it.)
+
+Anthropic authentication still runs in bundle mode; only the interactive Kinetica credential collection is skipped (there may be no live DB to connect to). See [Offline Bundle Analysis](#offline-bundle-analysis-read-only) for the tools, and [CLAUDE.md](CLAUDE.md) for the parser/architecture details.
+
 ## CLI Flags
 
 ```bash
@@ -232,15 +255,18 @@ admin-agent --login-org=UUID      # Target organization UUID for OAuth
 admin-agent --logout              # Log out from Anthropic account and exit
 admin-agent --model=NAME          # Override agent model (sonnet | haiku | opus); default: sonnet
 admin-agent --max-budget=USD      # Per-session budget cap in USD (API-key billing only); default: 5.00
+admin-agent --bundle=PATH         # Offline mode: diagnose from an extracted support-bundle directory
 ```
 
 The `--model` flag swaps the primary model for a single session. `haiku` is cheaper and faster for simple triage; `opus` is slower and more expensive but produces deeper reasoning on complex investigations. The fallback model remains `haiku` regardless of the primary choice, so availability is unchanged. When you omit `--model` in an interactive terminal, the agent shows a startup picker (defaulting to `sonnet`); non-interactive runs use the default without prompting.
 
 The `--max-budget` flag sets the per-session dollar cap for API-key billing (see [Session Budget](#session-budget)). It overrides `ADMIN_AGENT_MAX_BUDGET` and has no effect under OAuth subscription billing, which is turn-limited instead.
 
+The `--bundle` flag points the agent at an **extracted** support-bundle directory for [offline analysis](#offline-bundle-mode) (pass the directory, not a `.tgz`). It composes with a live connection — the agent attempts a best-effort live connection at startup so it can cross-check bundle evidence against current state — and skips interactive Kinetica credential collection (Anthropic auth still runs).
+
 ## Tools
 
-22 tools organized into categories. Diagnostic and SQL tools execute without approval. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow.
+28 tools organized into categories: **22 live tools** (used when connected to a running instance) plus **6 offline bundle-analysis tools** (used against an extracted support bundle). Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report, the agent asks the operator (in conversation) whether to save and waits for a yes — so `save_report` only writes once you've agreed.
 
 ### System Health & Monitoring
 
@@ -298,11 +324,24 @@ The `--max-budget` flag sets the per-session dollar cap for API-key billing (see
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | `kinetica_alter_table_columns` | Batch 2+ column changes into one ALTER TABLE. Two-step approval: interactive checklist then SQL preview |
 
+### Offline Bundle Analysis (read-only)
+
+Available against an extracted `gpudb_sysinfo` support bundle (see [Offline Bundle Mode](#offline-bundle-mode)). All read-only; the search/timeline tools stream and bound their output so a 20 MB rank log never blows up the context.
+
+| Tool                           | Description                                                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `kinetica_load_bundle`         | Attach an extracted bundle directory; without a path it opens a directory picker (a model-supplied path needs operator confirmation) |
+| `kinetica_bundle_list_files`   | Inventory: detected version, ranks + services present, file counts/sizes by kind — call this first                                   |
+| `kinetica_bundle_log_timeline` | Per-time-bucket severity counts across ranks (the incident shape) — call before searching                                            |
+| `kinetica_bundle_search_logs`  | Bounded log search by regex, min-severity, time window, and rank / host-manager / component                                          |
+| `kinetica_bundle_read_config`  | Read the bundle's real on-disk `gpudb.conf`, with optional section/key filter                                                        |
+| `kinetica_bundle_read_sysinfo` | OS/process/version diagnostic files (memory, CPU, disk, GPU, network, process args)                                                  |
+
 ### Reporting
 
-| Tool          | Description                                                         |
-| ------------- | ------------------------------------------------------------------- |
-| `save_report` | Timestamped markdown report to `reports/` with credential scrubbing |
+| Tool          | Description                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| `save_report` | Timestamped markdown report to `reports/` with credential scrubbing — agent asks before saving |
 
 ## Security
 
@@ -311,10 +350,12 @@ The agent is designed with defense-in-depth for database administration:
 - **Credential isolation** — Kinetica credentials are captured in a closure and never exposed to the agent or logged
 - **HTTPS enforcement** — URL resolution probes HTTPS first; any fallback to plaintext HTTP requires explicit interactive confirmation, is refused in non-interactive environments, and can be disabled entirely via `KINETICA_HTTPS_ONLY=1`
 - **Read-only by default** — 16 read-only diagnostic tools (including SQL execute/explain) run without approval; the agent has no access to `Bash`, `Edit`, `Write`, or `MultiEdit` and cannot run arbitrary shell commands
+- **Offline analysis is read-only by construction** — in bundle-only mode the mutation tools are never instantiated; the 6 bundle tools only read files, and every read is confined to the bundle root (path-escape attempts via `..` are rejected). Attaching a bundle the _model_ chose (an explicit `path` passed to `kinetica_load_bundle`) requires operator confirmation, since loading widens the readable directory — a path you pick from the interactive picker is already your consent
 - **Mutation approval gate** — the 4 administrative mutation tools each trigger an interactive y/n/explain prompt before execution; DROP/TRUNCATE/DELETE/UPDATE SQL is always blocked (with CTE-bypass protection)
 - **Two-step approval for batch column alter** — `kinetica_alter_table_columns` requires the operator to select columns via a checklist, then confirm the exact SQL preview
 - **Audit trail** — every mutation logs a redacted audit line to stderr (EXECUTED/FAILED + fingerprinted input summary) and appears in the report's "Mutations Applied" table with before/after state
 - **Report scrubbing** — saved reports are scrubbed of URLs, auth headers, Basic/Bearer credentials, cookies, and passwords before writing to disk
+- **Confirmed report writes** — the agent asks the operator (in conversation) whether to save before composing the report, and writes only after a yes; the one exception is an automatic partial-report checkpoint when the budget guard is about to cut the session off, so findings are never lost
 - **Budget guard** — a per-session dollar cap (default $5.00, configurable via `--max-budget` or `ADMIN_AGENT_MAX_BUDGET`) prevents runaway spend on API-key billing; OAuth subscription sessions are bounded by the turn limit instead
 
 To report a security vulnerability, please see [SECURITY.md](SECURITY.md). Do not open a public GitHub issue for security issues.
@@ -384,6 +425,8 @@ References provide domain knowledge (not diagnostic runbooks). Create a `.md` fi
 - `sql-create-index` — column index syntax, chunk skip index, when to use which
 - `version-quirks-7.2` — endpoint/property differences between 7.2.x and earlier releases
 
+Plus a **bundle-scoped reference** (`support-bundle` — bundle layout, log-line format, severity ordering, file parsing) that lives in `knowledge/references/bundle/`. It loads in **every** session — even a pure live one — so that a bundle attached mid-session via `kinetica_load_bundle` has its parsing knowledge ready in the (build-once) prompt; the corpus is cached, so the cost to a session that never attaches a bundle is negligible.
+
 > **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~20,000 estimated tokens. Current baseline is ~13.4k tokens (6 playbooks + 9 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
 
 ## Development
@@ -433,10 +476,11 @@ Exit codes: `0` pass, `1` assertion failed, `2` harness failure (e.g., missing A
 
 ```
 src/
-  cli/          # Entry point, banner, arg parsing
-  agent/        # Agent loop, system prompt, schema discovery
+  cli/          # Entry point, banner, arg parsing, bundle directory picker
+  agent/        # Agent loop, system prompts (live + bundle), schema discovery
   session/      # Kinetica connection, credentials, .env management, URL resolution
-  tools/        # 22 MCP tools (rest/, sql/, mutation/)
+  bundle/       # Offline support-bundle parsers + BundleSource facade
+  tools/        # 28 MCP tools (rest/, sql/, mutation/, bundle/)
   output/       # Formatting, truncation, table alignment
   approval/     # Mutation approval gate and checklist UI
   report/       # Report generation and credential scrubbing
@@ -444,7 +488,7 @@ src/
   types/        # Shared type contracts
 knowledge/
   playbooks/    # Diagnostic runbooks (Markdown + YAML frontmatter)
-  references/   # Domain knowledge documents
+  references/   # Domain knowledge documents (bundle/ subdir = offline-only refs)
 reports/        # Generated diagnostic reports (git-ignored)
 ```
 
@@ -478,6 +522,12 @@ admin-agent
 **"Unknown URI" errors from tools**
 
 - Some endpoints (e.g., `/admin/show/logs`) don't exist in Kinetica 7.2.x — the agent falls back to SQL queries automatically
+
+**`--bundle` won't start / "expects an extracted directory"**
+
+- The bundle must be **extracted first**: `tar xzf gpudb_sysinfo*.tgz`, then pass the resulting directory to `--bundle`. Passing the archive itself fails fast by design.
+- `--bundle=` with an empty value (e.g. an unset shell variable) is rejected — supply a real path.
+- A missing-artifact warning (no config / no core logs) is non-fatal; the agent diagnoses with whatever is present, just as in degraded mode.
 
 **Agent hits budget cap**
 
