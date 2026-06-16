@@ -9,8 +9,13 @@
  * - Timestamped filename: kinetica-diag-YYYY-MM-DD-HHmmss.md
  * - UTF-8 file write via node:fs/promises
  *
- * Registered as readOnly: true — saving reports is non-destructive and safe,
- * requiring no user approval gate.
+ * Consent to save is obtained CONVERSATIONALLY, not here: the system prompt
+ * instructs the agent to ask the operator "save this report? (yes/no)" and wait
+ * for a yes BEFORE calling this tool. That keeps the question up front, before the
+ * agent spends time composing the (large) report — a handler-level prompt would
+ * fire only after the content was generated, and would also block emergency
+ * partial-report checkpoints under budget pressure. So this tool writes directly
+ * once the agent calls it.
  *
  * Exports:
  *   formatTimestamp(date) — pure function for UTC YYYY-MM-DD-HHmmss formatting (exported for testing)
@@ -55,14 +60,16 @@ export function formatTimestamp(date: Date): string {
  * - Timestamped filename: kinetica-diag-YYYY-MM-DD-HHmmss.md (UTC)
  * - Optional partial marker when investigation was interrupted
  *
- * Annotated readOnly: true so the approval gate auto-approves this tool.
+ * Annotated readOnly: true so the approval gate auto-approves this tool. Consent
+ * is obtained conversationally before the agent calls it (see module doc), so the
+ * handler writes directly.
  *
  * @returns SdkMcpToolDefinition for the save_report tool
  */
 export function makeSaveReportTool() {
   return tool(
     "save_report",
-    "Save a diagnostic report to disk. Automatically scrubs credentials, creates a timestamped filename in reports/, and auto-creates the directory. Use at the end of each investigation or when interrupted.",
+    "Save a diagnostic report to disk. Call this ONLY after the operator has agreed to save (you must ask 'save this report? (yes/no)' and get a yes first) — or when checkpointing a partial report under budget pressure. Automatically scrubs credentials, creates a timestamped filename in reports/, and auto-creates the directory.",
     {
       content: z.string().describe("The full markdown diagnostic report content"),
       partial: z
