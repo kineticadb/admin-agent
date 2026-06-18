@@ -222,6 +222,128 @@ describe("searchLogs — loki-tail fallback", () => {
   });
 });
 
+describe("Loki multi-rank layout — per-rank tails for ranks absent from logs-local", () => {
+  // Reproduces the real bundle that exposed the bug: a Loki-based collector ran on
+  // ONE host (holding ranks r0/r1, captured as logs-local rolling files) but exported
+  // a per-rank Loki tail for the WHOLE 9-rank cluster into logs/rank<N>.log. Ranks
+  // r2..r8 exist ONLY as those tails. The old classifier left them rank-less, so
+  // inventory showed only r0/r1 and a cluster-wide search never scanned r2+.
+  let lokiDir: string;
+  let lokiSource: BundleSource;
+
+  beforeAll(async () => {
+    lokiDir = await mkdtemp(join(tmpdir(), "bundle-loki-"));
+    await mkdir(join(lokiDir, "logs-local"), { recursive: true });
+    await mkdir(join(lokiDir, "logs"), { recursive: true });
+
+    // Rolling core logs — only the collector host's ranks (r0, r1).
+    await writeFile(
+      join(lokiDir, "logs-local", "core-gpudb-rolling-r0.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r0/c) node2 A.cpp:1 - rolling r0\n",
+    );
+    await writeFile(
+      join(lokiDir, "logs-local", "core-gpudb-rolling-r1.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r1/c) node2 A.cpp:1 - rolling r1\n",
+    );
+
+    // Loki per-rank exports for the full cluster. r0/r1 overlap the rolling logs
+    // (must be superseded, not double-scanned); r2/r3 are unique to the tails.
+    await writeFile(
+      join(lokiDir, "logs", "rank0.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r0/c) node3 A.cpp:1 - loki r0\n",
+    );
+    await writeFile(
+      join(lokiDir, "logs", "rank1.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r1/c) node3 A.cpp:1 - loki r1\n",
+    );
+    await writeFile(
+      join(lokiDir, "logs", "rank2.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r2/c) node3 A.cpp:1 - loki r2\n",
+    );
+    await writeFile(
+      join(lokiDir, "logs", "rank3.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r3/c) node3 A.cpp:1 - loki r3\n",
+    );
+    // Host-manager Loki export + a rank-less combined tail — neither belongs in a
+    // numeric-rank search.
+    await writeFile(
+      join(lokiDir, "logs", "hostmanager.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,hm/c) node2 Hm.cpp:1 - loki hm\n",
+    );
+    await writeFile(
+      join(lokiDir, "logs", "gpudb.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r0/c) node2 A.cpp:1 - loki combined\n",
+    );
+    // A non-rank component tail under logs/ (the graph server log). loki-tail with a
+    // component name — must still be reachable via the `component` selector.
+    await writeFile(
+      join(lokiDir, "logs", "graph.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,gr/c) node2 Graph.cpp:1 - graph solver oom\n",
+    );
+
+    lokiSource = await createBundleSource(lokiDir);
+  });
+
+  afterAll(async () => {
+    await rm(lokiDir, { recursive: true, force: true });
+  });
+
+  it("reports EVERY rank in the inventory — both rolling (r0/r1) and Loki-only (r2/r3)", () => {
+    // The headline bug: inventory used to show only ["r0","r1"].
+    const inv = lokiSource.inventory();
+    expect(inv.ranks).toEqual(["r0", "r1", "r2", "r3"]);
+    expect(inv.services).toContain("host-manager");
+  });
+
+  it("a cluster-wide search covers Loki-only ranks WITHOUT double-scanning r0/r1", async () => {
+    const r = await lokiSource.searchLogs({ minSeverity: "ERROR" });
+    // r0/r1 from the full rolling logs; r2/r3 from their Loki tails. r0/r1's Loki
+    // tails are superseded (not scanned), the host-manager tail and the rank-less
+    // combined tail are not part of a rank search.
+    expect([...r.filesScanned].sort()).toEqual([
+      "logs-local/core-gpudb-rolling-r0.log",
+      "logs-local/core-gpudb-rolling-r1.log",
+      "logs/rank2.log",
+      "logs/rank3.log",
+    ]);
+    expect(r.totalMatched).toBe(4);
+    expect(r.matches.map((m) => m.message).sort()).toEqual([
+      "loki r2",
+      "loki r3",
+      "rolling r0",
+      "rolling r1",
+    ]);
+  });
+
+  it("selects a Loki-only rank's tail when scoped to that rank", async () => {
+    const r = await lokiSource.searchLogs({ rank: "r3" });
+    expect(r.filesScanned).toEqual(["logs/rank3.log"]);
+    expect(r.totalMatched).toBe(1);
+    expect(r.matches[0].message).toBe("loki r3");
+  });
+
+  it("prefers the rolling core log over the Loki tail for a rank that has both", async () => {
+    const r = await lokiSource.searchLogs({ rank: "r0" });
+    expect(r.filesScanned).toEqual(["logs-local/core-gpudb-rolling-r0.log"]);
+    expect(r.totalMatched).toBe(1);
+    expect(r.matches[0].message).toBe("rolling r0");
+  });
+
+  it("falls back to the Loki host-manager export when no rolling hm log exists", async () => {
+    const r = await lokiSource.searchLogs({ hostManager: true });
+    expect(r.filesScanned).toEqual(["logs/hostmanager.log"]);
+    expect(r.totalMatched).toBe(1);
+    expect(r.matches[0].message).toBe("loki hm");
+  });
+
+  it("reaches a component tail under logs/ via the component selector", async () => {
+    const r = await lokiSource.searchLogs({ component: "graph" });
+    expect(r.filesScanned).toEqual(["logs/graph.log"]);
+    expect(r.totalMatched).toBe(1);
+    expect(r.matches[0].message).toBe("graph solver oom");
+  });
+});
+
 describe("host manager — a service, not a rank", () => {
   let hmDir: string;
   let hmSource: BundleSource;

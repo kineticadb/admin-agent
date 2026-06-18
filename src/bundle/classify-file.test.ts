@@ -13,6 +13,20 @@ describe("classifyFile", () => {
     });
   });
 
+  it("classifies a ROTATED rolling log (.log.1) as core-log with the rank — not unknown", () => {
+    // Rotated history (core-gpudb-rolling-r0.log.1) carries older lines for the same
+    // rank. It used to fall to `unknown` (the gate required a bare .log suffix), so
+    // that history was indexed but searchable by no tool.
+    expect(classifyFile("logs-local/core-gpudb-rolling-r0.log.1")).toMatchObject({
+      kind: "core-log",
+      rank: "r0",
+    });
+    expect(classifyFile("logs-local/core-gpudb-rolling-r1.log.2")).toMatchObject({
+      kind: "core-log",
+      rank: "r1",
+    });
+  });
+
   it("classifies the host-manager rolling log as core-log with the host-manager SERVICE, not a rank", () => {
     // "hm" is the host-manager service (singleton, port 9300), NOT a rank. Filing it
     // under `service` keeps the rank vocabulary numeric so per-line rank filters and
@@ -59,6 +73,34 @@ describe("classifyFile", () => {
   it("classifies logs/ entries as loki-tail", () => {
     expect(classifyFile("logs/gpudb.log")).toMatchObject({ kind: "loki-tail" });
     expect(classifyFile("logs/rank0.log")).toMatchObject({ kind: "loki-tail" });
+  });
+
+  it("tags Loki per-rank logs (logs/rank<N>.log) with the numeric rank", () => {
+    // A Loki-based collector exports one log per rank cluster-wide. These are the
+    // ONLY evidence for ranks on hosts the collector didn't run on (absent from
+    // logs-local). They must carry a `rank` so inventory + per-rank selection see them.
+    expect(classifyFile("logs/rank0.log")).toMatchObject({ kind: "loki-tail", rank: "r0" });
+    expect(classifyFile("logs/rank2.log")).toMatchObject({ kind: "loki-tail", rank: "r2" });
+    expect(classifyFile("logs/rank8.log")).toMatchObject({ kind: "loki-tail", rank: "r8" });
+    // …and NOT a bogus component name (the old behavior left component:"rank2").
+    expect(classifyFile("logs/rank2.log").component).toBeUndefined();
+  });
+
+  it("tags the Loki host-manager export (logs/hostmanager.log) as the host-manager SERVICE, not a rank", () => {
+    const c = classifyFile("logs/hostmanager.log");
+    expect(c).toMatchObject({ kind: "loki-tail", service: "host-manager" });
+    expect(c.rank).toBeUndefined();
+    expect(c.component).toBeUndefined();
+  });
+
+  it("keeps non-rank logs/ entries as component-named loki-tails", () => {
+    // Service/component tails under logs/ (graph, sql, tomcat) still get a component
+    // name — only rank<N>.log and hostmanager.log are special-cased above.
+    expect(classifyFile("logs/graph.log")).toMatchObject({
+      kind: "loki-tail",
+      component: "graph",
+    });
+    expect(classifyFile("logs/sql.log").rank).toBeUndefined();
   });
 
   it("classifies .conf files as config", () => {

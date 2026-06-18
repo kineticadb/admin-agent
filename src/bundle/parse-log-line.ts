@@ -10,6 +10,11 @@
  *   component logs (gpudb-sql-engine.log):
  *     2026-06-11 15:18:03.000 INFO (54820,1,sql) gpudb-sql-engine.sh Starting Kinetica SQL Engine
  *
+ *   Loki/promtail JSONL exports (logs/rank0.log et al.):
+ *     {"labels":{"level":"info"},"line":"… : INFO (…) host src.cpp:1 - msg","timestamp":"…"}
+ *   These are unwrapped to a standard line first (see unwrap-loki-jsonl); the dialects
+ *   below then apply to the unwrapped form.
+ *
  * The common prefix is `timestamp severity (pid,tid,context)`; everything
  * after is best-effort. The core dialect adds `host source.cpp:line - message`;
  * the component dialect does not. Lines that do not match the prefix (stack
@@ -22,6 +27,8 @@
  *
  * Pure, never throws.
  */
+
+import { unwrapLokiJsonl } from "./unwrap-loki-jsonl.js";
 
 export interface ParsedLogLine {
   /** Raw timestamp string, e.g. "2026-06-11 15:18:06.569". Sorts chronologically as a string. */
@@ -74,9 +81,13 @@ export function severityRank(severity?: string): number {
 }
 
 export function parseLogLine(line: string): ParsedLogLine {
-  const match = PREFIX_RE.exec(line);
+  // Loki JSONL records (logs/rank*.log) are unwrapped to a standard line first; raw
+  // (non-JSONL) lines pass through untouched. `raw` always preserves the ORIGINAL line
+  // so regex search still tests the true bundle content.
+  const effective = unwrapLokiJsonl(line) ?? line;
+  const match = PREFIX_RE.exec(effective);
   if (!match) {
-    return { message: line, raw: line };
+    return { message: effective, raw: line };
   }
 
   const [, timestamp, severity, paren, rest] = match;

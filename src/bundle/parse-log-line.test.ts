@@ -88,6 +88,30 @@ describe("parseLogLine — tolerant fallback", () => {
   });
 });
 
+describe("parseLogLine — Loki JSONL dialect (logs/rank*.log)", () => {
+  const rec =
+    '{"labels":{"level":"error"},"line":"2026-06-17 18:25:57.319 error gpudb_log rank-3 :  ERROR  (530352,533249,r3/gpudb_gsetmgr  ) 300-303-u31-v100 TypeManagement/GaiaSetData.cpp:1271 - shard failover","timestamp":"2026-06-17T18:25:57.319Z"}';
+
+  it("unwraps the JSON envelope and parses the nested Kinetica line", () => {
+    const p = parseLogLine(rec);
+    expect(p.timestamp).toBe("2026-06-17 18:25:57.319");
+    expect(p.severity).toBe("ERROR"); // uppercase from the body, not the lowercase Loki level
+    expect(p.rank).toBe("r3");
+    expect(p.source).toBe("TypeManagement/GaiaSetData.cpp:1271");
+    expect(p.message).toBe("shard failover");
+  });
+
+  it("keeps raw as the ORIGINAL JSONL line so regex search tests true content", () => {
+    expect(parseLogLine(rec).raw).toBe(rec);
+  });
+
+  it("severity is filterable — the headline bug was severity coming back undefined", () => {
+    // Before unwrapping, parseLogLine saw a line starting with '{' → no severity →
+    // every minSeverity filter silently dropped it. Now it ranks as a real ERROR.
+    expect(severityRank(parseLogLine(rec).severity)).toBe(severityRank("ERROR"));
+  });
+});
+
 describe("severityRank", () => {
   it("orders severities from least to most severe", () => {
     expect(severityRank("INFO")).toBeLessThan(severityRank("WARN"));

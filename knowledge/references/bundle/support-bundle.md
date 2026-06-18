@@ -23,6 +23,18 @@ Severity order for filtering is `WARN < UERR < ERROR < FATAL`, so `min_severity=
 - Timestamps are plain local strings without a timezone; compare them lexically and treat cross-rank timing cautiously.
 - **Ranks vs. the host manager:** `rank` selects a numeric rank (`r0`, `r1`, …) only. The host manager (`core-gpudb-rolling-hm.log`) is a singleton service, NOT a rank — search or timeline it with `host_manager: true`, never `rank: "hm"`. By default both `log_timeline` and `search_logs` already cover the host manager along with the numeric ranks; `kinetica_bundle_list_files` lists it under `services_present`.
 
+### Finding a crash's triggering SQL
+
+When a worker rank segfaults mid-query, that rank's log holds the **backtrace** but NOT the **SQL** — the query text and predicates are logged on **rank 0** (the coordinator), never on workers. Do not conclude the SQL is "only in `ki_query_history`" (a live table, unavailable offline) just because it is absent from the crashing rank.
+
+Workflow, given a `JobId` from a worker's crash stack:
+
+1. `kinetica_bundle_search_logs` with `rank: "r0"` and `regex` = the JobId. r0 logs the `/execute/sql` receipt (submitting user), the `Sql/SqlDriver.cpp … Executing SQL:` line, and per-operation endpoint lines.
+2. The per-operation lines (`Endpoint_aggregate_group_by.cpp`, filter/join endpoints) carry `table:`, `column_names:`/`aliases:` (the SELECT list), and `expr:` (the full WHERE predicate) — reconstruct the query from these.
+3. **Quirk:** if `Found plan for the SQL in cache` precedes it, the `Executing SQL:` line is truncated to just `SELECT`. Use the per-operation endpoint lines (step 2) — their predicate survives a cache hit. A `datetime()`/timestamp filter showing up here often _is_ the input that triggered a parser segfault.
+
+See `rank-architecture.md` (Where queries are logged) for why this locality holds.
+
 ### Files of interest
 
 `kinetica_bundle_list_files` annotates every file with a `description` of what it contains, so consult that first. The canonical OS-diagnostic / host files (each is `EXEC_CMD`-wrapped — read with `kinetica_bundle_read_sysinfo`):
@@ -37,4 +49,13 @@ Severity order for filtering is `WARN < UERR < ERROR < FATAL`, so `min_severity=
 - **Packages / accounts:** `deb.txt` / `rpm.txt` (installed packages), `user.txt` (users/groups, gpudb account), `ld.so.conf.txt`, `etc_*.txt` (system shell/host config).
 - **Evidence Gaps:** `errors.txt` / `proc-logs-erros.txt` — collection commands that FAILED. `logfiles.txt` — manifest of log dirs the collector enumerated.
 
-Rolling core logs under `logs-local/` are the primary source. The small last-2h Loki tails under `logs/` are searched only when no rolling core logs were collected. Each `*.txt` artifact records the exact shell command that produced it in its `EXEC_CMD:` header, so `kinetica_bundle_read_sysinfo` always shows you precisely what ran.
+### Two log families — and why every rank is reachable
+
+A bundle carries per-rank logs in up to two places, and the collector host usually holds only a couple of the cluster's ranks:
+
+- **`logs-local/` — rolling core logs** (`core-gpudb-rolling-r{N}.log`, plus rotations `…​.log.1`): the full local history, but ONLY for the ranks running on the host the collector ran on (often just r0/r1). These are the primary, richest source for those ranks.
+- **`logs/` — Loki/promtail exports** (`rank{N}.log` for every rank cluster-wide, `hostmanager.log`, and per-component tails like `sql.log`, `graph.log`): pulled from centralized logging, so these are the ONLY evidence for ranks on hosts the collector didn't run on (e.g. r2…r8). They are JSON-wrapped on disk, but the tools unwrap them transparently — you still filter by `min_severity`, `from_ts`/`to_ts`, and get clean messages.
+
+You do not choose between families. `rank: "r{N}"` resolves to that rank's rolling log if present, else its Loki tail — so **all** ranks reported under `ranks_present` are searchable the same way, and a default (no-rank) search/timeline spans the whole cluster. `host_manager: true` likewise prefers `core-gpudb-rolling-hm.log`, falling back to `logs/hostmanager.log`. Trust `ranks_present` from `kinetica_bundle_list_files` for the true rank count; don't infer it from `logs-local/` alone.
+
+Each `*.txt` artifact records the exact shell command that produced it in its `EXEC_CMD:` header, so `kinetica_bundle_read_sysinfo` always shows you precisely what ran.

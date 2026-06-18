@@ -8,6 +8,8 @@
  *   logs-local/core-gpudb-rolling-r0.log   → core-log   (rank r0; the primary source)
  *   logs-local/sql-engine.log              → component-log (component "sql-engine")
  *   logs/gpudb.log                         → loki-tail  (last-2h Loki query, small)
+ *   logs/rank2.log                         → loki-tail  (rank r2; Loki per-rank export)
+ *   logs/hostmanager.log                   → loki-tail  (host-manager service; Loki export)
  *   gpudb_core_etc_gpudb.conf              → config
  *   mem.txt / cpu.txt / disk.txt / …       → os-diag
  *   gpudb-exe-r0-164100.txt                → process-info (rank r0)
@@ -52,9 +54,22 @@ export interface FileClassification {
 
 // The "(r\d+|hm)" id in a rolling/exe filename is EITHER a numeric rank OR the
 // host-manager service token. ROLLING/EXE_ID_RE captures it; rankOrService routes it.
-const ROLLING_ID_RE = /core-gpudb-rolling-(r\d+|hm)\.log$/;
+// The optional `.\d+` tail matches log rotations (core-gpudb-rolling-r0.log.1) — older
+// history for the same rank, kept searchable rather than dropped to `unknown`.
+const ROLLING_ID_RE = /core-gpudb-rolling-(r\d+|hm)\.log(?:\.\d+)?$/;
 const EXE_ID_RE = /gpudb-exe-(r\d+|hm)-/;
 const HOST_RE = /\b(node\w+)\b/;
+
+// A log file, possibly with a numeric rotation suffix: .log, .log.1, .log.2, …
+const LOG_RE = /\.log(?:\.\d+)?$/;
+
+// Loki-based collectors export one log per rank into logs/ as `rank<N>.log` (the
+// ONLY evidence for ranks on hosts the collector didn't run on — those never appear
+// in logs-local rolling files). `hostmanager.log` is the same export for the
+// host-manager service. These carry rank/service identity in the filename and must
+// be tagged so they're addressable, unlike the generic component tails under logs/.
+const LOKI_RANK_RE = /^rank(\d+)\.log$/;
+const LOKI_HM_BASE = "hostmanager.log";
 
 /** Map a rolling/exe filename id to a rank XOR a service — never both. */
 function rankOrService(id: string): { rank: string } | { service: BundleService } {
@@ -78,9 +93,11 @@ function inferHost(relPath: string): string | undefined {
 function componentName(base: string): string {
   return (
     base
-      // Strip ALL trailing ".log" suffixes — real stats sub-logs ship doubled (e.g.
+      // Strip a trailing rotation suffix first (tomcat.log.1 → tomcat.log), then ALL
+      // trailing ".log" suffixes — real stats sub-logs ship doubled (e.g.
       // "stats-loki-node2.log.log"); stripping only one left ".log" glued to the name
       // and blocked the host-suffix strip below, so the component filter never matched.
+      .replace(/\.\d+$/, "")
       .replace(/(\.log)+$/, "")
       .replace(/^core-gpudb-/, "")
       .replace(/^gpudb-/, "")
@@ -119,13 +136,25 @@ export function classifyFile(relPath: string): FileClassification {
     return { kind: "process-info", ...rankOrService(exeId[1]), ...(host ? { host } : {}) };
   }
 
-  if (base.endsWith(".log")) {
+  if (LOG_RE.test(base)) {
     const rolling = ROLLING_ID_RE.exec(base);
     if (rolling) {
       return { kind: "core-log", ...rankOrService(rolling[1]), ...(host ? { host } : {}) };
     }
-    // Small last-2h Loki tails live directly under logs/.
+    // Loki tails live directly under logs/. Per-rank (`rank<N>.log`) and host-manager
+    // (`hostmanager.log`) exports carry identity in the filename — tag them with
+    // rank/service (NOT component) so per-rank selection and the inventory `ranks`
+    // list pick them up. Everything else under logs/ is a component/service tail.
     if (dir === "logs") {
+      // Normalize the Loki filename's identity to the shared "(r\d+|hm)" vocabulary so
+      // the SAME rankOrService router used by rolling/exe files makes the rank-vs-service
+      // decision — keeping that decision in one place. Filenames carry no token
+      // (graph.log, sql.log) fall through to a component tail.
+      const lokiRank = LOKI_RANK_RE.exec(base);
+      const lokiId = lokiRank ? `r${lokiRank[1]}` : base === LOKI_HM_BASE ? "hm" : undefined;
+      if (lokiId !== undefined) {
+        return { kind: "loki-tail", ...rankOrService(lokiId), ...(host ? { host } : {}) };
+      }
       return { kind: "loki-tail", component: componentName(base), ...(host ? { host } : {}) };
     }
     return { kind: "component-log", component: componentName(base), ...(host ? { host } : {}) };

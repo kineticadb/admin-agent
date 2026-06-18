@@ -37,10 +37,12 @@ const GPUDB_VERSION_RE = /GPUdb version\s*:\s*(\S+)/;
 /** A log-file selector layered on top of the raw log query. */
 export interface BundleLogQuery extends LogQuery {
   /**
-   * Restrict the file set to a numeric rank ("r0"/"r1"). This is a FILE selector
-   * only — each rank writes its own log, so it is not re-applied per line (that
-   * would drop continuation/stack-trace lines that carry no rank token). The host
-   * manager is a service, not a rank — select it with `hostManager`, not here.
+   * Restrict the file set to a numeric rank ("r0", "r1", … "r8"). Resolves to the
+   * rank's rolling core log if present, else its Loki per-rank tail (logs/rank<N>.log).
+   * This is a FILE selector only — each rank writes its own log, so it is not
+   * re-applied per line (that would drop continuation/stack-trace lines that carry no
+   * rank token). The host manager is a service, not a rank — select it with
+   * `hostManager`, not here.
    */
   readonly rank?: string;
   /** Restrict the file set to the host-manager log (the "hm" singleton service, not a rank). */
@@ -116,23 +118,57 @@ function selectLogFiles(
   opts: { rank?: string; hostManager?: boolean; component?: string; includeComponents?: boolean },
 ): readonly FileIndexEntry[] {
   if (opts.component !== undefined) {
-    return index.filter((e) => e.kind === "component-log" && e.component === opts.component);
+    // Component tails live in BOTH families: logs-local/<name>.log (component-log) and
+    // the Loki export logs/<name>.log (loki-tail with a component name, e.g. graph, sql,
+    // tomcat). Match either kind so a `component:` query reaches the Loki tails too —
+    // otherwise large component logs under logs/ (graph.log can be tens of MB) are
+    // indexed but unreachable whenever any core log exists.
+    return index.filter(
+      (e) =>
+        (e.kind === "component-log" || e.kind === "loki-tail") && e.component === opts.component,
+    );
   }
   // The host manager is a singleton service, selected explicitly — never via `rank`.
+  // Prefer its rolling core log; fall back to its Loki tail (logs/hostmanager.log)
+  // when no rolling log was collected — same core-beats-tail rule applied per rank below.
   if (opts.hostManager) {
-    return index.filter((e) => e.kind === "core-log" && e.service === "host-manager");
+    const hmCore = index.filter((e) => e.kind === "core-log" && e.service === "host-manager");
+    if (hmCore.length > 0) return hmCore;
+    return index.filter((e) => e.kind === "loki-tail" && e.service === "host-manager");
   }
-  let core = index.filter(
-    (e) => e.kind === "core-log" && (opts.rank === undefined || e.rank === opts.rank),
+
+  const matchesRank = (e: FileIndexEntry): boolean =>
+    opts.rank === undefined || e.rank === opts.rank;
+
+  // Per-rank precedence — NOT a global core-XOR-tails toggle. A rolling core log
+  // (logs-local, full history) supersedes the Loki per-rank tail (logs/rank<N>.log)
+  // FOR THE SAME RANK. But a Loki collector exports one tail per rank cluster-wide,
+  // while logs-local only holds the ranks on the collector's own host — so ranks
+  // present ONLY as tails (workers on other hosts) must still be selected. The old
+  // global toggle ("if any core log exists, ignore all tails") silently dropped
+  // exactly those ranks: the agent saw only r0/r1 and missed r2..rN entirely.
+  const coreLogs = index.filter((e) => e.kind === "core-log" && matchesRank(e));
+  const ranksWithCore = new Set(
+    coreLogs.map((e) => e.rank).filter((r): r is string => r !== undefined),
   );
-  // Fallback: when no rolling core logs were collected, the small last-2h Loki
-  // tails (kind "loki-tail") are the only log evidence present. Without this the
-  // tails are indexed and listed but searchable by no tool — the agent would scan
-  // zero files and wrongly conclude "no errors in logs". When core logs DO exist
-  // they supersede the tails (a 2h subset), so we only fall back when core is empty.
-  if (core.length === 0) {
-    core = index.filter((e) => e.kind === "loki-tail");
-  }
+  const supplementalTails = index.filter(
+    (e) =>
+      e.kind === "loki-tail" &&
+      e.rank !== undefined &&
+      matchesRank(e) &&
+      !ranksWithCore.has(e.rank),
+  );
+  const rankBearing = [...coreLogs, ...supplementalTails];
+
+  // Last-resort fallback: a bundle with NO rank-bearing logs at all — neither
+  // rolling core nor per-rank Loki tails. The only log evidence is the rank-less
+  // tails (e.g. logs/gpudb.log). Without this the agent scans zero files and
+  // wrongly concludes "no errors in logs". Honors the rank filter, so a rank-scoped
+  // query against a bundle that lacks that rank correctly returns nothing.
+  const core =
+    rankBearing.length > 0
+      ? rankBearing
+      : index.filter((e) => e.kind === "loki-tail" && matchesRank(e));
   if (opts.includeComponents) {
     return [...core, ...index.filter((e) => e.kind === "component-log")];
   }

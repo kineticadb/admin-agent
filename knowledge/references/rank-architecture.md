@@ -31,6 +31,18 @@ resource-group reports.
 - All 16,384 shards map to worker ranks (rank 0 holds no shards).
 - RAM limits typically 5+ GB per rank.
 
+## Where queries are logged — rank 0 only (crash forensics)
+
+The **SQL text and query predicates are logged on rank 0**, the coordinator that receives and plans every query. Worker ranks log only their slice of execution plus any fault. So when a worker rank crashes mid-query, its log holds the **stack trace** but NOT the **triggering SQL** — those are two different ranks.
+
+To recover the triggering SQL for a crashing `JobId`, search **rank 0's** log (the rolling `core-gpudb-rolling-r0.log` or the Loki `rank0.log`) for that JobId. Rank 0 logs, in order:
+
+- `Endpoint.cpp` — `Request URI: /execute/sql … user: …` (who submitted it)
+- `Sql/SqlDriver.cpp … Executing SQL: <text>` — the SQL text
+- per-operation endpoint lines (`Endpoint_aggregate_group_by.cpp`, filter/join endpoints) — `table:`, `column_names:`/`aliases:` (the SELECT list), and `expr:` (the full WHERE predicate)
+
+**Quirk:** when the line `SqlDriver.cpp … Found plan for the SQL in cache` precedes it, the `Executing SQL:` line is **truncated to just `SELECT`** (a cached plan skips re-logging the text). Reconstruct the query from the per-operation endpoint lines instead — their `table` + `column_names` + `expr` survive regardless of plan cache state. This is the reliable path to a crash's exact query (including timestamp/`datetime()` filters that often trigger parser faults).
+
 ## Interpreting Metrics — Key Rule
 
 **Rank 0's low resource usage is normal — it is NOT a sign of
