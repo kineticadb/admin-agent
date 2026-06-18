@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import pc from "picocolors";
 import { renderMarkdownLine } from "./render-markdown.js";
+import { purple, pink } from "./brand-colors.js";
+
+// Mirror the implementation's width fallback so rule assertions hold whether or not
+// the test runner is attached to a TTY.
+const W = process.stderr.columns && process.stderr.columns > 0 ? process.stderr.columns : 80;
 
 describe("renderMarkdownLine", () => {
   describe("bold (**text**)", () => {
@@ -20,17 +25,12 @@ describe("renderMarkdownLine", () => {
       );
     });
 
-    it("renders bold at end of line", () => {
-      expect(renderMarkdownLine("Status is **critical**")).toBe(`Status is ${pc.bold("critical")}`);
-    });
-
     it("renders entire line as bold", () => {
       expect(renderMarkdownLine("**everything bold**")).toBe(pc.bold("everything bold"));
     });
 
     it("uses non-greedy matching (does not merge spans)", () => {
-      const result = renderMarkdownLine("**a** and **b**");
-      expect(result).toBe(`${pc.bold("a")} and ${pc.bold("b")}`);
+      expect(renderMarkdownLine("**a** and **b**")).toBe(`${pc.bold("a")} and ${pc.bold("b")}`);
     });
 
     it("leaves unmatched single ** unchanged", () => {
@@ -39,20 +39,22 @@ describe("renderMarkdownLine", () => {
   });
 
   describe("headers (# text)", () => {
-    it("renders ## heading as bold without # prefix", () => {
-      expect(renderMarkdownLine("## System Health")).toBe(pc.bold("System Health"));
+    it("renders h1 as bold brand-pink with a leading blank line and an underline rule", () => {
+      expect(renderMarkdownLine("# Title")).toBe(
+        `\n${pc.bold(pink("Title"))}\n${pc.dim("─".repeat(W))}`,
+      );
     });
 
-    it("renders # heading (h1)", () => {
-      expect(renderMarkdownLine("# Title")).toBe(pc.bold("Title"));
+    it("renders h2 as an accent bar + bold brand-pink, preceded by a blank line", () => {
+      expect(renderMarkdownLine("## System Health")).toBe(`\n${pc.bold(pink("▌ System Health"))}`);
     });
 
-    it("renders ### heading (h3)", () => {
-      expect(renderMarkdownLine("### Subsection")).toBe(pc.bold("Subsection"));
+    it("renders h3 as bold brand-purple, kept tight", () => {
+      expect(renderMarkdownLine("### Subsection")).toBe(pc.bold(purple("Subsection")));
     });
 
-    it("renders ###### heading (h6)", () => {
-      expect(renderMarkdownLine("###### Deep")).toBe(pc.bold("Deep"));
+    it("renders h6 like a sub-section (bold brand-purple)", () => {
+      expect(renderMarkdownLine("###### Deep")).toBe(pc.bold(purple("Deep")));
     });
 
     it("does not match # without space after", () => {
@@ -61,6 +63,73 @@ describe("renderMarkdownLine", () => {
 
     it("does not match # in the middle of a line", () => {
       expect(renderMarkdownLine("issue #42 is open")).toBe("issue #42 is open");
+    });
+  });
+
+  describe("horizontal rules", () => {
+    it("renders --- as a dim full-width rule", () => {
+      expect(renderMarkdownLine("---")).toBe(pc.dim("─".repeat(W)));
+    });
+
+    it("renders *** and ___ as rules too", () => {
+      expect(renderMarkdownLine("***")).toBe(pc.dim("─".repeat(W)));
+      expect(renderMarkdownLine("___")).toBe(pc.dim("─".repeat(W)));
+    });
+
+    it("does not treat two dashes as a rule", () => {
+      expect(renderMarkdownLine("--")).toBe("--");
+    });
+  });
+
+  describe("list items", () => {
+    it("renders a dash bullet with a brand-purple dot", () => {
+      expect(renderMarkdownLine("- a finding")).toBe(`${purple("•")} a finding`);
+    });
+
+    it("preserves indentation on nested bullets", () => {
+      expect(renderMarkdownLine("  - nested")).toBe(`  ${purple("•")} nested`);
+    });
+
+    it("uses a red ✗ glyph and tints the token when the item names a hard severity", () => {
+      expect(renderMarkdownLine("- ERROR in rank 5")).toBe(
+        `${pc.red("✗")} ${pc.red("ERROR")} in rank 5`,
+      );
+    });
+
+    it("uses a yellow ⚠ glyph for a WARN item", () => {
+      expect(renderMarkdownLine("- WARN tcs_per_tom low")).toBe(
+        `${pc.yellow("⚠")} ${pc.yellow("WARN")} tcs_per_tom low`,
+      );
+    });
+
+    it("applies inline styling inside bullet content", () => {
+      expect(renderMarkdownLine("- use `show_table`")).toBe(
+        `${purple("•")} use ${purple("show_table")}`,
+      );
+    });
+  });
+
+  describe("inline code", () => {
+    it("tints `code` spans brand-purple and strips the backticks", () => {
+      expect(renderMarkdownLine("run `health_check` now")).toBe(
+        `run ${purple("health_check")} now`,
+      );
+    });
+  });
+
+  describe("semantic severity tinting (case-sensitive, whole word)", () => {
+    it("tints an uppercase FATAL token red in prose", () => {
+      expect(renderMarkdownLine("status FATAL detected")).toBe(
+        `status ${pc.red("FATAL")} detected`,
+      );
+    });
+
+    it("tints HEALTHY green", () => {
+      expect(renderMarkdownLine("cluster HEALTHY")).toBe(`cluster ${pc.green("HEALTHY")}`);
+    });
+
+    it("leaves lowercase 'errors' untouched to avoid prose false positives", () => {
+      expect(renderMarkdownLine("found no errors today")).toBe("found no errors today");
     });
   });
 
@@ -73,11 +142,11 @@ describe("renderMarkdownLine", () => {
       expect(renderMarkdownLine("")).toBe("");
     });
 
-    it("returns table line unchanged", () => {
+    it("returns a table line unchanged (aligner handles tables separately)", () => {
       expect(renderMarkdownLine("| A | B |")).toBe("| A | B |");
     });
 
-    it("returns line with single asterisks unchanged", () => {
+    it("returns a line with single asterisks unchanged", () => {
       expect(renderMarkdownLine("*italic* text")).toBe("*italic* text");
     });
   });

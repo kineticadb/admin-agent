@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import pc from "picocolors";
 import { createStreamingTableAligner } from "./streaming-table-aligner.js";
+import { pink } from "./brand-colors.js";
 
 describe("createStreamingTableAligner", () => {
   describe("passthrough — plain text", () => {
@@ -202,10 +203,10 @@ describe("createStreamingTableAligner", () => {
       expect(output).toBe(`The ${pc.bold("CPU")} is at 90%\n`);
     });
 
-    it("renders heading markdown with # stripped", () => {
+    it("renders an h2 heading as an accent bar + bold brand-pink (# stripped)", () => {
       const aligner = createStreamingTableAligner();
       const output = aligner.push("## System Health\n");
-      expect(output).toBe(`${pc.bold("System Health")}\n`);
+      expect(output).toBe(`\n${pc.bold(pink("▌ System Health"))}\n`);
     });
 
     it("renders bold in flushed lineBuffer", () => {

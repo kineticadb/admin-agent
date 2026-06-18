@@ -172,15 +172,16 @@ describe("reformatTables", () => {
       expect(lines[4]).toBe("| Host    | host1    |");
     });
 
-    it("handles inline code in cells", () => {
+    it("handles inline code in cells (backticks stripped, width matches rendered text)", () => {
       const input = ["| Tool | Description |", "| --- | --- |", "| `health` | Check health |"].join(
         "\n",
       );
 
       const result = reformatTables(input);
       const lines = result.split("\n");
-      expect(lines[1]).toBe("| Tool     | Description  |");
-      expect(lines[3]).toBe("| `health` | Check health |");
+      // `health` renders as health (6 visible chars), so col 0 widens to 6, not 8.
+      expect(lines[1]).toBe("| Tool   | Description  |");
+      expect(lines[3]).toBe("| health | Check health |");
     });
   });
 

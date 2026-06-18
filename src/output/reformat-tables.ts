@@ -9,16 +9,10 @@
  * Non-table content passes through unchanged.
  */
 
-import { renderMarkdownLine } from "./render-markdown.js";
+import { styleInline, visibleWidth } from "./render-markdown.js";
 
 const TABLE_LINE_RE = /^\|.*\|$/;
 const SEPARATOR_CELL_RE = /^:?-+:?$/;
-const BOLD_MARKERS_RE = /\*\*(.+?)\*\*/g;
-
-/** Returns the visual width of text, excluding invisible markdown markers like **. */
-function visualWidth(text: string): number {
-  return text.replace(BOLD_MARKERS_RE, "$1").length;
-}
 
 /** Returns true if a trimmed cell looks like a separator (e.g. ---, :--:, ---:). */
 function isSeparatorCell(cell: string): boolean {
@@ -56,12 +50,12 @@ export function reformatTableBlock(lines: readonly string[]): string[] {
   });
 
   // Compute max visual width per column (min 3 for valid "---" separators).
-  // Uses visualWidth to exclude invisible markdown markers like **.
+  // Uses visibleWidth to exclude invisible markdown markers like **.
   // Skip separator rows when measuring widths.
   const colWidths = Array.from({ length: colCount }, (_, col) =>
     Math.max(
       3,
-      ...normalised.filter((row) => !isSeparatorRow(row)).map((row) => visualWidth(row[col])),
+      ...normalised.filter((row) => !isSeparatorRow(row)).map((row) => visibleWidth(row[col])),
     ),
   );
 
@@ -74,8 +68,11 @@ export function reformatTableBlock(lines: readonly string[]): string[] {
       return borderRow;
     }
     const cells = row.map((cell, col) => {
-      const rendered = renderMarkdownLine(cell);
-      const pad = colWidths[col] - visualWidth(cell);
+      // styleInline (NOT renderMarkdownLine): cells get bold/code/severity styling but
+      // never block constructs — a cell holding "---" or "- x" must not become a rule
+      // or a bullet.
+      const rendered = styleInline(cell);
+      const pad = colWidths[col] - visibleWidth(cell);
       return rendered + " ".repeat(Math.max(0, pad));
     });
     return `| ${cells.join(" | ")} |`;
