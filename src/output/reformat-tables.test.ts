@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import pc from "picocolors";
 import { reformatTables } from "./reformat-tables.js";
+import { purple } from "./brand-colors.js";
 
 /** Strip ANSI escape codes for visual width comparison. */
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -180,8 +181,10 @@ describe("reformatTables", () => {
       const result = reformatTables(input);
       const lines = result.split("\n");
       // `health` renders as health (6 visible chars), so col 0 widens to 6, not 8.
+      // The cell is styled with purple() — build the expectation from the same helper
+      // so it tracks picocolors' color state (CI enables color, local vitest does not).
       expect(lines[1]).toBe("| Tool   | Description  |");
-      expect(lines[3]).toBe("| health | Check health |");
+      expect(lines[3]).toBe(`| ${purple("health")} | Check health |`);
     });
   });
 
