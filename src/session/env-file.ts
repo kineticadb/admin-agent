@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
-import { confirm } from "@inquirer/prompts";
+import { confirm } from "../output/themed-prompts.js";
 import pc from "picocolors";
 
 /**

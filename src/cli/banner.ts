@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import { getVersion } from "./version.js";
+import { BRAND_PURPLE, BRAND_PINK, type Rgb } from "../output/brand-colors.js";
 
 const LOGO = `\
   ██╗  ██╗██╗███╗   ██╗███████╗████████╗██╗ ██████╗ █████╗
@@ -10,8 +11,6 @@ const LOGO = `\
   ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝╚═╝  ╚═╝`;
 
 export { LOGO };
-
-type Rgb = readonly [number, number, number];
 
 function lerpRgb(from: Rgb, to: Rgb, t: number): Rgb {
   return [
@@ -33,8 +32,6 @@ const SHADOW_CHARS = new Set(["╗", "╔", "║", "╝", "╚", "═"]);
 const DIM_FACTOR = 0.4;
 
 function gradientize(text: string): string {
-  const PURPLE: Rgb = [147, 51, 234];
-  const HOT_PINK: Rgb = [236, 72, 153];
   const RESET = "\x1b[0m";
 
   const lines = text.split("\n");
@@ -42,7 +39,7 @@ function gradientize(text: string): string {
 
   return lines
     .map((line, i) => {
-      const bright = lerpRgb(PURPLE, HOT_PINK, i / maxIdx);
+      const bright = lerpRgb(BRAND_PURPLE, BRAND_PINK, i / maxIdx);
       const dim = dimRgb(bright, DIM_FACTOR);
 
       let result = "";

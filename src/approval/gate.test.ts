@@ -213,7 +213,7 @@ describe("createApprovalGate", () => {
     await gate("mutate_z", {}, makeOptions({ signal: ac.signal }));
 
     expect(mockInput).toHaveBeenCalledWith(
-      { message: "Proceed? (y/n/explain):" },
+      expect.objectContaining({ message: "Proceed? (y/n/explain):" }),
       { signal: ac.signal },
     );
   });

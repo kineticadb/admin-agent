@@ -1,5 +1,5 @@
 import pc from "picocolors";
-import { confirm } from "@inquirer/prompts";
+import { confirm } from "../output/themed-prompts.js";
 import { collectCredentials, repromptCredentials } from "./collect.js";
 import { createSession } from "./KineticaSession.js";
 import { offerSaveCredentials } from "./env-file.js";

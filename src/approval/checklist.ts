@@ -8,7 +8,7 @@
  * Uses @inquirer/prompts checkbox() (already in dependencies) and picocolors for styling.
  * Follows the same visual pattern as display.ts (approval panel).
  */
-import { checkbox } from "@inquirer/prompts";
+import { checkbox } from "../output/themed-prompts.js";
 import pc from "picocolors";
 
 // ---------------------------------------------------------------------------

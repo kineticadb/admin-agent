@@ -19,7 +19,7 @@
  *   makeAlterTableColumnsTool() — factory returning SdkMcpToolDefinition
  */
 import { z } from "zod";
-import { input } from "@inquirer/prompts";
+import { input } from "../../output/themed-prompts.js";
 import pc from "picocolors";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 

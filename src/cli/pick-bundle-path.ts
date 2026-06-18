@@ -19,7 +19,7 @@
  * mute "No results found" that's indistinguishable from a genuinely empty folder.
  */
 
-import { search } from "@inquirer/prompts";
+import { search } from "../output/themed-prompts.js";
 import { readdir } from "node:fs/promises";
 import { resolve, dirname, basename, join } from "node:path";
 

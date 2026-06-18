@@ -1,5 +1,5 @@
 import pc from "picocolors";
-import { confirm } from "@inquirer/prompts";
+import { confirm } from "../output/themed-prompts.js";
 
 /** Timeout for each protocol probe request (ms). */
 const PROBE_TIMEOUT_MS = 3_000;

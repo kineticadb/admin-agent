@@ -40,7 +40,11 @@ vi.mock("./discover-schemas.js", () => ({
   discoverCatalogSchemas: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("./load-playbooks.js", () => ({
+// Partial mock: stub loadPlaybooks but keep the real findPackageRoot (+ pure helpers).
+// report-template.ts imports findPackageRoot at module-load time to read the real
+// report.md; a bare factory drops it, so REPORT_TEMPLATE silently loads as "".
+vi.mock("./load-playbooks.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./load-playbooks.js")>()),
   loadPlaybooks: vi.fn().mockResolvedValue([]),
 }));
 
@@ -911,10 +915,11 @@ describe("makeInteractivePrompt", () => {
     await gen.next(); // second turn
     await gen.next(); // exit
 
-    expect(mockInput).toHaveBeenNthCalledWith(1, {
-      message: "Describe the issue to investigate:",
-    });
-    expect(mockInput).toHaveBeenNthCalledWith(2, { message: "You:" });
+    expect(mockInput).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ message: "Describe the issue to investigate:" }),
+    );
+    expect(mockInput).toHaveBeenNthCalledWith(2, expect.objectContaining({ message: "You:" }));
   });
 
   it("blocks subsequent turn until gate opens", async () => {

@@ -1,4 +1,4 @@
-import { confirm, input, password } from "@inquirer/prompts";
+import { confirm, input, password } from "../output/themed-prompts.js";
 import pc from "picocolors";
 import type { Credentials } from "../types/index.js";
 

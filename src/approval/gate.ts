@@ -17,7 +17,7 @@
  *
  * 5. Matches the CanUseTool callback signature from @anthropic-ai/claude-agent-sdk.
  */
-import { input } from "@inquirer/prompts";
+import { input } from "../output/themed-prompts.js";
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import { renderApprovalPanel } from "./display.js";
 

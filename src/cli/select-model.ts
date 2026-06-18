@@ -1,4 +1,4 @@
-import { select } from "@inquirer/prompts";
+import { select } from "../output/themed-prompts.js";
 import { SUPPORTED_MODELS, DEFAULT_AGENT_MODEL } from "../agent/run-agent.js";
 import type { AgentModel } from "../agent/run-agent.js";
 

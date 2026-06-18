@@ -29,7 +29,7 @@ import type {
   SDKSystemMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { input } from "@inquirer/prompts";
+import { input } from "../output/themed-prompts.js";
 
 import pc from "picocolors";
 
@@ -259,7 +259,9 @@ export async function* makeInteractivePrompt(
   while (!abortController.signal.aborted) {
     try {
       process.stderr.write("\n");
-      const issue = await input({ message: "Describe the issue to investigate:" });
+      const issue = await input({
+        message: "Describe the issue to investigate:",
+      });
       process.stderr.write("\n");
       const trimmed = issue.trim();
       if (!trimmed) continue;
