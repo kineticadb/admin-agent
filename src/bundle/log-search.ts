@@ -17,9 +17,23 @@
 
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { parseLogLine, severityRank } from "./parse-log-line.js";
+import { parseLogLine, severityRank, type ParsedLogLine } from "./parse-log-line.js";
 
 export const DEFAULT_MAX_MATCHES = 200;
+
+/**
+ * Multi-line record coalescing (`coalesceMultiline`). A Kinetica log record can span
+ * several physical lines when a logged value contains embedded newlines — most often the
+ * SQL on an `Executing SQL:` line, whose continuation lines carry NO timestamp prefix
+ * (`FROM …`, `WHERE …`, …). A line-oriented search returns only the first physical line,
+ * so the agent sees a truncated query. With coalescing on, each RETURNED match absorbs
+ * the continuation lines that follow it up to the next timestamped record, recovering the
+ * WHOLE statement. Bounded so one pathological record can't flood the context: appending
+ * stops after this many continuation lines or characters, whichever comes first, and the
+ * message is then tagged `[continuation truncated]`.
+ */
+export const MULTILINE_MAX_LINES = 300;
+export const MULTILINE_MAX_CHARS = 20_000;
 
 /**
  * Upper bound on the characters of a single line that a user/agent-supplied
@@ -58,6 +72,14 @@ export interface LogQuery {
   readonly rank?: string;
   /** Cap on returned matches (default DEFAULT_MAX_MATCHES). The total is still counted. */
   readonly maxMatches?: number;
+  /**
+   * Reconstruct multi-line records: append the continuation lines that follow each
+   * returned match (those with no timestamp prefix) to its `message`, recovering e.g. a
+   * SQL statement logged with embedded newlines. Off by default; continuation lines are
+   * otherwise scanned as their own (timestamp-less) lines. Bounded by MULTILINE_MAX_LINES
+   * / MULTILINE_MAX_CHARS. See the module header.
+   */
+  readonly coalesceMultiline?: boolean;
 }
 
 export interface LogMatch {
@@ -145,6 +167,41 @@ function matchesFilters(
   return true;
 }
 
+/** Build a LogMatch from a parsed line, omitting absent optional fields. */
+function buildMatch(lineNumber: number, parsed: ParsedLogLine): LogMatch {
+  return {
+    lineNumber,
+    ...(parsed.timestamp !== undefined ? { timestamp: parsed.timestamp } : {}),
+    ...(parsed.severity !== undefined ? { severity: parsed.severity } : {}),
+    ...(parsed.rank !== undefined ? { rank: parsed.rank } : {}),
+    message: parsed.message,
+    raw: parsed.raw,
+  };
+}
+
+/**
+ * A multi-line record being assembled (coalesce mode only): the matched first line plus
+ * the continuation lines accrued so far. `truncated` latches once a bound is hit.
+ */
+interface PendingMatch {
+  readonly base: LogMatch;
+  readonly extra: string[];
+  chars: number;
+  truncated: boolean;
+}
+
+/**
+ * Fold a pending record's continuation lines into the match's `message`. `raw` is left as
+ * the original first physical line (honoring its "unmodified line" contract); the
+ * reconstructed multi-line text lives in `message`, which is what the search tool surfaces.
+ */
+function finalizeMultiline(pending: PendingMatch): LogMatch {
+  if (pending.extra.length === 0) return pending.base;
+  const joined = pending.extra.join("\n");
+  const suffix = pending.truncated ? "\n… [continuation truncated]" : "";
+  return { ...pending.base, message: `${pending.base.message}\n${joined}${suffix}` };
+}
+
 /**
  * Stream a log file, returning up to `maxMatches` matching lines plus the total
  * match count and lines scanned. Never reads the file whole; never throws.
@@ -175,9 +232,22 @@ export async function searchLogFile(filePath: string, query: LogQuery): Promise<
     ...(query.toTs !== undefined ? { toTs: ceilTimestamp(query.toTs) } : {}),
   };
 
+  const coalesce = query.coalesceMultiline === true;
   const matches: LogMatch[] = [];
   let totalMatched = 0;
   let linesScanned = 0;
+  // An open multi-line record (coalesce mode): continuation lines accrue here until the
+  // next timestamped record closes it. Declared outside the try so the catch can still
+  // flush a record that was mid-assembly when a read error hit.
+  let pending: PendingMatch | undefined;
+  // Drain an open record into `matches`. Single definition shared by the three flush
+  // sites (next-record boundary, end-of-file, read error) so they can't diverge.
+  const flushPending = (): void => {
+    if (pending) {
+      matches.push(finalizeMultiline(pending));
+      pending = undefined;
+    }
+  };
 
   try {
     const rl = createInterface({
@@ -188,21 +258,42 @@ export async function searchLogFile(filePath: string, query: LogQuery): Promise<
     for await (const line of rl) {
       linesScanned++;
       const parsed = parseLogLine(line);
+
+      // While a record is open, a line with NO timestamp is its continuation — absorb it
+      // (bounded) instead of testing it as an independent match. A timestamped line closes
+      // the record; fall through to evaluate it as a fresh match candidate.
+      if (pending) {
+        if (parsed.timestamp === undefined) {
+          if (
+            !pending.truncated &&
+            pending.extra.length < MULTILINE_MAX_LINES &&
+            pending.chars + line.length + 1 <= MULTILINE_MAX_CHARS
+          ) {
+            pending.extra.push(line);
+            pending.chars += line.length + 1;
+          } else {
+            pending.truncated = true;
+          }
+          continue;
+        }
+        flushPending();
+      }
+
       if (!matchesFilters(parsed, boundedQuery, regex, minRank)) continue;
 
       totalMatched++;
       if (matches.length < maxMatches) {
-        matches.push({
-          lineNumber: linesScanned,
-          ...(parsed.timestamp !== undefined ? { timestamp: parsed.timestamp } : {}),
-          ...(parsed.severity !== undefined ? { severity: parsed.severity } : {}),
-          ...(parsed.rank !== undefined ? { rank: parsed.rank } : {}),
-          message: parsed.message,
-          raw: parsed.raw,
-        });
+        const base = buildMatch(linesScanned, parsed);
+        // In coalesce mode hold the match open so following continuation lines can attach;
+        // it is flushed by the next timestamped record (or at EOF). The reserved slot is
+        // always flushed into `matches` before the next cap check, so counting stays exact.
+        if (coalesce) pending = { base, extra: [], chars: 0, truncated: false };
+        else matches.push(base);
       }
     }
+    flushPending(); // a record left open at end-of-file
   } catch (err) {
+    flushPending(); // a record mid-assembly when the read errored
     const message = err instanceof Error ? err.message : String(err);
     return {
       matches,

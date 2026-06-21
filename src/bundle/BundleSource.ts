@@ -256,6 +256,7 @@ function toLineQuery(q: BundleLogQuery): LogQuery {
     ...(q.fromTs !== undefined ? { fromTs: q.fromTs } : {}),
     ...(q.toTs !== undefined ? { toTs: q.toTs } : {}),
     ...(q.maxMatches !== undefined ? { maxMatches: q.maxMatches } : {}),
+    ...(q.coalesceMultiline !== undefined ? { coalesceMultiline: q.coalesceMultiline } : {}),
   };
 }
 

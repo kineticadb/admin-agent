@@ -25,6 +25,17 @@ export const BundleSearchLogsSchema = z.object({
     .optional(),
   component: z.string().optional(),
   include_components: z.boolean().optional(),
+  include_multiline: z
+    .boolean()
+    .describe(
+      "Reconstruct multi-line log records: append continuation lines (those with no " +
+        "timestamp) to each match. Use this to capture a full SQL statement on an " +
+        "'Executing SQL:' line — the query often spans many lines because the SQL has " +
+        "embedded newlines, and a plain match shows only its first line. Works on the " +
+        "rolling core logs (logs-local/); Loki per-rank tails (logs/rankN.log) keep only " +
+        "the statement's first line, so there are no continuation lines to stitch there.",
+    )
+    .optional(),
   max_matches: z.number().int().min(1).max(1000).optional(),
 });
 
@@ -45,6 +56,7 @@ export async function bundleSearchLogs(
     ...(args.include_components !== undefined
       ? { includeComponents: args.include_components }
       : {}),
+    ...(args.include_multiline !== undefined ? { coalesceMultiline: args.include_multiline } : {}),
     ...(args.max_matches !== undefined ? { maxMatches: args.max_matches } : {}),
   };
 

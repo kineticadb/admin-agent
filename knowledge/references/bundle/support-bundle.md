@@ -20,6 +20,7 @@ Severity order for filtering is `WARN < UERR < ERROR < FATAL`, so `min_severity=
 
 - The logs are large (a rank log can exceed 100k lines). NEVER ask for a whole file. Use `kinetica_bundle_log_timeline` to localize, then `kinetica_bundle_search_logs` with a tight time window + severity to extract only relevant lines. The match cap is shared across files — if you see "capped", narrow the query rather than asking for more.
 - You can pass a timeline bucket label straight into `from_ts`/`to_ts` (e.g. `2026-06-11 15` searches that whole hour) — partial timestamps are widened to cover the full period.
+- A single log record can span multiple physical lines when a logged value (notably a SQL statement) contains embedded newlines — the continuation lines have no timestamp. A plain search returns only the first line. Pass `include_multiline: true` to stitch the continuation lines back onto each match and recover the whole record. See "Finding a crash's triggering SQL".
 - Timestamps are plain local strings without a timezone; compare them lexically and treat cross-rank timing cautiously.
 - **Ranks vs. the host manager:** `rank` selects a numeric rank (`r0`, `r1`, …) only. The host manager (`core-gpudb-rolling-hm.log`) is a singleton service, NOT a rank — search or timeline it with `host_manager: true`, never `rank: "hm"`. By default both `log_timeline` and `search_logs` already cover the host manager along with the numeric ranks; `kinetica_bundle_list_files` lists it under `services_present`.
 
@@ -29,11 +30,13 @@ When a worker rank segfaults mid-query, that rank's log holds the **backtrace** 
 
 Workflow, given a `JobId` from a worker's crash stack:
 
-1. `kinetica_bundle_search_logs` with `rank: "r0"` and `regex` = the JobId. r0 logs the `/execute/sql` receipt (submitting user), the `Sql/SqlDriver.cpp … Executing SQL:` line, and per-operation endpoint lines.
-2. The per-operation lines (`Endpoint_aggregate_group_by.cpp`, filter/join endpoints) carry `table:`, `column_names:`/`aliases:` (the SELECT list), and `expr:` (the full WHERE predicate) — reconstruct the query from these.
-3. **Quirk:** if `Found plan for the SQL in cache` precedes it, the `Executing SQL:` line is truncated to just `SELECT`. Use the per-operation endpoint lines (step 2) — their predicate survives a cache hit. A `datetime()`/timestamp filter showing up here often _is_ the input that triggered a parser segfault.
+1. `kinetica_bundle_search_logs` with `rank: "r0"`, `regex` = the JobId, **and `include_multiline: true`**. r0 logs the `/execute/sql` receipt (submitting user), the `Sql/SqlDriver.cpp … Executing SQL:` line, and per-operation endpoint lines.
+2. **Read the full statement straight from the `Executing SQL:` line — do not reconstruct it.** Kinetica logs the SQL verbatim, so a real query spans MANY physical lines: `FROM …`, `JOIN …`, `WHERE …` each land on their own line with no timestamp prefix. Those continuation lines belong to the same log record; `include_multiline: true` stitches them back onto the match so you see the WHOLE query. WITHOUT it, a match is only the first physical line (e.g. `… Executing SQL: SELECT c."circuitId", c."circuitRef"`) and you would wrongly report the query as "truncated." Quote the statement verbatim from this single (now multi-line) match.
+3. **Cache-hit fallback only:** if `Found plan for the SQL in cache` precedes the job, Kinetica logs `Executing SQL:` as just the statement keyword (e.g. a bare `SELECT` or `EXECUTE PROCEDURE …`) with no continuation lines to stitch. ONLY then fall back to the per-operation endpoint lines (`Endpoint_aggregate_group_by.cpp`, filter/join endpoints): they carry `table:`, `column_names:`/`aliases:` (the SELECT list), and `expr:` (the full WHERE predicate), whose values survive a cache hit. A `datetime()`/timestamp filter showing up here often _is_ the input that triggered a parser segfault.
 
-See `rank-architecture.md` (Where queries are logged) for why this locality holds.
+**Where the full multi-line query actually lives:** `include_multiline` recovers the whole statement only from the **rolling core logs** (`logs-local/core-gpudb-rolling-r0.log`), where the SQL's embedded newlines are preserved as continuation lines. The **Loki per-rank tail** (`logs/rank0.log`) keeps only the statement's first physical line — promtail captures each line as its own record, so the `FROM`/`JOIN`/`WHERE` lines are simply not in that export, and nothing can stitch them. So this workflow depends on r0 being present under `logs-local/`. If r0 exists only as a Loki tail (rare for the coordinator, but possible for a Loki-only bundle), the complete query may not be in the bundle at all — say so rather than reporting the first line as the whole query, and fall back to step 3's endpoint lines.
+
+See `rank-architecture.md` (Where queries are logged) for why this locality holds, and "Two log families" below for rolling-vs-Loki precedence.
 
 ### Files of interest
 

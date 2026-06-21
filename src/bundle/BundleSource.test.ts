@@ -38,6 +38,12 @@ beforeAll(async () => {
     [
       "2026-06-11 15:18:06.569 INFO  (1,1,r0/c) node2 App.cpp:1 - boot",
       "2026-06-11 15:18:07.000 ERROR (1,1,r0/c) node2 Gpu.cpp:3 - GPU OOM rank0",
+      // A multi-line Executing SQL record: continuation lines carry no timestamp.
+      "2026-06-11 15:18:08.000 INFO  (1,1,r0/c) node2 Sql/SqlDriver.cpp:1505 - JobId:9; Executing SQL: SELECT a,",
+      "  b, c",
+      "FROM widgets",
+      "WHERE id = 1",
+      "2026-06-11 15:18:08.100 INFO  (1,1,r0/c) node2 Endpoint/Endpoint.cpp:279 - JobId:9; completed",
     ].join("\n"),
   );
   await writeFile(
@@ -126,6 +132,23 @@ describe("searchLogs", () => {
     const r = await source.searchLogs({ regex: "rank", maxMatches: 1 });
     expect(r.matches).toHaveLength(1);
     expect(r.capped).toBe(true);
+  });
+
+  it("reconstructs a multi-line SQL statement when coalesceMultiline is set", async () => {
+    const r = await source.searchLogs({ regex: "Executing SQL", coalesceMultiline: true });
+    expect(r.totalMatched).toBe(1);
+    const msg = r.matches[0].message;
+    expect(msg).toContain("SELECT a,");
+    expect(msg).toContain("FROM widgets");
+    expect(msg).toContain("WHERE id = 1");
+    // The next timestamped line closes the record and is NOT folded in.
+    expect(msg).not.toContain("completed");
+  });
+
+  it("returns only the first SQL line without coalesceMultiline (default)", async () => {
+    const r = await source.searchLogs({ regex: "Executing SQL" });
+    expect(r.matches[0].message).toContain("SELECT a,");
+    expect(r.matches[0].message).not.toContain("FROM widgets");
   });
 
   it("widens a partial timestamp bound (timeline bucket label) to its full period", async () => {

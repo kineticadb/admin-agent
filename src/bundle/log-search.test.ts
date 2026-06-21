@@ -9,6 +9,7 @@ import {
   ceilTimestamp,
   DEFAULT_MAX_MATCHES,
   REGEX_SCAN_MAX,
+  MULTILINE_MAX_LINES,
 } from "./log-search.js";
 
 const LINES = [
@@ -105,6 +106,79 @@ describe("searchLogFile", () => {
       // ...but a token inside the window still matches.
       const inside = await searchLogFile(p, { regex: "x" });
       expect(inside.totalMatched).toBe(1);
+    } finally {
+      await rm(d, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("searchLogFile — multi-line record coalescing", () => {
+  // A SQL statement logged verbatim: the `Executing SQL:` record continues across
+  // several physical lines with no timestamp; the next timestamped line closes it.
+  const SQL_LINES = [
+    "2026-06-11 15:18:06.569 INFO  (1,1,r0/c) node2 App.cpp:1 - boot",
+    '2026-06-11 15:18:08.000 INFO  (1,1,r0/c) node2 Sql/SqlDriver.cpp:1505 - JobId:42; Executing SQL: SELECT c."circuitId",',
+    '  c."circuitRef",',
+    "FROM bird_dev.circuits c",
+    "WHERE c.\"country\" = 'Singapore'",
+    "LIMIT 1",
+    "2026-06-11 15:18:08.100 UERR  (1,1,r0/c) node2 Sql/SqlDriver.cpp:1513 - JobId:42; SqlDriver: Message 'Object not found'",
+  ];
+
+  let sqlDir: string;
+  let sqlPath: string;
+
+  beforeAll(async () => {
+    sqlDir = await mkdtemp(join(tmpdir(), "bundle-ml-"));
+    sqlPath = join(sqlDir, "core-gpudb-rolling-r0.log");
+    await writeFile(sqlPath, SQL_LINES.join("\n"), "utf-8");
+  });
+
+  afterAll(async () => {
+    await rm(sqlDir, { recursive: true, force: true });
+  });
+
+  it("returns only the first physical line by default (coalesce off)", async () => {
+    const r = await searchLogFile(sqlPath, { regex: "Executing SQL" });
+    expect(r.totalMatched).toBe(1);
+    expect(r.matches[0].message).toContain('SELECT c."circuitId"');
+    expect(r.matches[0].message).not.toContain("FROM bird_dev.circuits");
+  });
+
+  it("stitches continuation lines onto the match when coalesceMultiline is set", async () => {
+    const r = await searchLogFile(sqlPath, { regex: "Executing SQL", coalesceMultiline: true });
+    expect(r.totalMatched).toBe(1); // the record is counted once, not per physical line
+    const msg = r.matches[0].message;
+    expect(msg).toContain('SELECT c."circuitId"');
+    expect(msg).toContain("FROM bird_dev.circuits c");
+    expect(msg).toContain("WHERE c.\"country\" = 'Singapore'");
+    expect(msg).toContain("LIMIT 1");
+    // The next timestamped record (the UERR) closes the SQL record — never absorbed.
+    expect(msg).not.toContain("Object not found");
+    // lineNumber stays the first physical line where the match was found.
+    expect(r.matches[0].lineNumber).toBe(2);
+  });
+
+  it("still scans every physical line, including continuations", async () => {
+    const r = await searchLogFile(sqlPath, { coalesceMultiline: true });
+    expect(r.linesScanned).toBe(SQL_LINES.length);
+  });
+
+  it("bounds a pathological record and tags it truncated", async () => {
+    const d = await mkdtemp(join(tmpdir(), "bundle-ml-big-"));
+    const p = join(d, "core-gpudb-rolling-r0.log");
+    const continuation = Array.from({ length: MULTILINE_MAX_LINES + 50 }, (_, i) => `  col_${i},`);
+    const lines = [
+      "2026-06-11 15:18:08.000 INFO  (1,1,r0/c) node2 Sql/SqlDriver.cpp:1505 - JobId:7; Executing SQL: SELECT",
+      ...continuation,
+      "2026-06-11 15:18:09.000 INFO  (1,1,r0/c) node2 Endpoint/Endpoint.cpp:279 - JobId:7; done",
+    ];
+    await writeFile(p, lines.join("\n"), "utf-8");
+    try {
+      const r = await searchLogFile(p, { regex: "Executing SQL", coalesceMultiline: true });
+      expect(r.matches[0].message).toContain("[continuation truncated]");
+      // The closing timestamped line is still not absorbed.
+      expect(r.matches[0].message).not.toContain("done");
     } finally {
       await rm(d, { recursive: true, force: true });
     }
