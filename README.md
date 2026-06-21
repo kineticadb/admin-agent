@@ -48,7 +48,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
 
 - Autonomous multi-round investigation with parallel tool calls
 - 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 live tools**, plus 6 offline bundle-analysis tools = **28 total**
-- **Offline support-bundle analysis** — diagnose from an extracted `gpudb_sysinfo` bundle (per-rank logs, `gpudb.conf`, host diagnostics) with no live connection, or attach a bundle alongside a live session to cross-check captured history against current state
+- **Offline support-bundle analysis** — diagnose from an extracted `gpudb_sysinfo` bundle (per-rank logs, `gpudb.conf`, host diagnostics) with no live connection, or attach a bundle alongside a live session to cross-check captured history against current state — even bundles that don't match the standard layout, via file-name and content inference
 - Expert knowledge via pluggable playbooks (no code required to add new ones)
 - Schema-aware SQL — discovers actual column names at startup, never guesses
 - HTTPS-first URL resolution with explicit consent required before any HTTP fallback
@@ -243,6 +243,8 @@ A bundle and a live connection are **composable capabilities, not exclusive mode
 
 **Every rank, however its logs were captured.** A bundle can carry per-rank logs in two forms: full rolling logs for the ranks on the collector's own host (`logs-local/`, including rotated history like `….log.1`), and centralized Loki/promtail exports for the entire cluster (`logs/rank0.log` … `rankN.log`, plus `hostmanager.log` and per-component tails). The agent reads both transparently — it identifies each rank from either source, prefers the richer rolling log when a rank has both, and falls back to the centralized export for ranks that live on other hosts. So on a multi-node cluster you can investigate **all** ranks (and the host manager), not just the ones local to where the bundle was collected. The centralized exports are JSON-wrapped on disk; the tools unwrap them automatically, so severity filters and timelines behave identically across both formats. `kinetica_bundle_list_files` reports the true rank count under `ranks_present` — trust it rather than guessing from `logs-local/`.
 
+**Bundles that don't match the expected shape.** Not every bundle is a clean `gpudb_sysinfo` capture — a customer may hand over a flat logs-only dump, a differently-named collector's output, or a partial directory. The agent infers each file's type from its name, and for files whose names give nothing away it sniffs a bounded slice of their content against the same log/config/sysinfo parsers. So a rolling log shipped without the canonical `core-` prefix, or a host-manager `.out` capture, is still recognized, searchable, and rank-attributed rather than silently dropped. `kinetica_bundle_list_files` reports a `layout_match` verdict (`canonical` / `partial` / `unfamiliar`), a per-file confidence (`exact` / `inferred` / `weak`), and any files it couldn't place — and the operator gets a startup warning when a bundle is off-shape — so an inference is never passed off as certainty. Classification depends only on file names and contents, never on what the bundle directory itself is named.
+
 Anthropic authentication still runs in bundle mode; only the interactive Kinetica credential collection is skipped (there may be no live DB to connect to). See [Offline Bundle Analysis](#offline-bundle-analysis-read-only) for the tools, and [CLAUDE.md](CLAUDE.md) for the parser/architecture details.
 
 ## CLI Flags
@@ -330,14 +332,14 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 Available against an extracted `gpudb_sysinfo` support bundle (see [Offline Bundle Mode](#offline-bundle-mode)). All read-only; the search/timeline tools stream and bound their output so a large rank log (tens of MB, hundreds of thousands of lines) never blows up the context.
 
-| Tool                           | Description                                                                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `kinetica_load_bundle`         | Attach an extracted bundle directory; without a path it opens a directory picker (a model-supplied path needs operator confirmation)  |
-| `kinetica_bundle_list_files`   | Inventory: detected version, ranks + services present, file counts/sizes by kind — call this first                                    |
-| `kinetica_bundle_log_timeline` | Per-time-bucket severity counts across ranks (the incident shape) — call before searching                                             |
-| `kinetica_bundle_search_logs`  | Bounded log search by regex, min-severity, time window, and rank / host-manager / component (reads both rolling and Loki-export logs) |
-| `kinetica_bundle_read_config`  | Read the bundle's real on-disk `gpudb.conf`, with optional section/key filter                                                         |
-| `kinetica_bundle_read_sysinfo` | OS/process/version diagnostic files (memory, CPU, disk, GPU, network, process args)                                                   |
+| Tool                           | Description                                                                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_load_bundle`         | Attach an extracted bundle directory; without a path it opens a directory picker (a model-supplied path needs operator confirmation)                                        |
+| `kinetica_bundle_list_files`   | Inventory: detected version, ranks + services present, file counts/sizes by kind, plus a layout-match verdict + per-file confidence for off-shape bundles — call this first |
+| `kinetica_bundle_log_timeline` | Per-time-bucket severity counts across ranks (the incident shape) — call before searching                                                                                   |
+| `kinetica_bundle_search_logs`  | Bounded log search by regex, min-severity, time window, and rank / host-manager / component (reads both rolling and Loki-export logs)                                       |
+| `kinetica_bundle_read_config`  | Read the bundle's real on-disk `gpudb.conf`, with optional section/key filter                                                                                               |
+| `kinetica_bundle_read_sysinfo` | OS/process/version diagnostic files (memory, CPU, disk, GPU, network, process args)                                                                                         |
 
 ### Reporting
 
@@ -427,7 +429,7 @@ References provide domain knowledge (not diagnostic runbooks). Create a `.md` fi
 - `sql-create-index` — column index syntax, chunk skip index, when to use which
 - `version-quirks-7.2` — endpoint/property differences between 7.2.x and earlier releases
 
-Plus a **bundle-scoped reference** (`support-bundle` — bundle layout, the two per-rank log families, raw + Loki-JSONL log-line formats, severity ordering, file parsing, crash-SQL forensics) that lives in `knowledge/references/bundle/`. It loads in **every** session — even a pure live one — so that a bundle attached mid-session via `kinetica_load_bundle` has its parsing knowledge ready in the (build-once) prompt; the corpus is cached, so the cost to a session that never attaches a bundle is negligible.
+Plus a **bundle-scoped reference** (`support-bundle` — bundle layout, the two per-rank log families, raw + Loki-JSONL log-line formats, severity ordering, file parsing, crash-SQL forensics, and how to work an off-shape bundle via the `layout_match`/confidence signals) that lives in `knowledge/references/bundle/`. It loads in **every** session — even a pure live one — so that a bundle attached mid-session via `kinetica_load_bundle` has its parsing knowledge ready in the (build-once) prompt; the corpus is cached, so the cost to a session that never attaches a bundle is negligible.
 
 > **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~20,000 estimated tokens. Current baseline is ~13.4k tokens (6 playbooks + 9 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
 

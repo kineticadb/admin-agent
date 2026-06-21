@@ -49,6 +49,17 @@ See `rank-architecture.md` (Where queries are logged) for why this locality hold
 - **Packages / accounts:** `deb.txt` / `rpm.txt` (installed packages), `user.txt` (users/groups, gpudb account), `ld.so.conf.txt`, `etc_*.txt` (system shell/host config).
 - **Evidence Gaps:** `errors.txt` / `proc-logs-erros.txt` — collection commands that FAILED. `logfiles.txt` — manifest of log dirs the collector enumerated.
 
+### When the bundle doesn't match the expected layout
+
+Not every bundle is a full `gpudb_sysinfo` capture. A customer may hand over a bare logs-only dump, a differently-named collector's output, or a flat directory. `kinetica_bundle_list_files` tells you how well it matched, so you never reason blindly over an unfamiliar shape:
+
+- **`layout_match`** — `canonical` (a normal gpudb_sysinfo bundle), `partial`, or `unfamiliar` (none of the expected config/version/host-diagnostic anchors were found, e.g. a logs-only dump). When it is not `canonical`, a `layout_note` summarizes what was inferred.
+- **Per-file `confidence`** — `exact` (matched a canonical name/location), `inferred` (recognized by a name or content heuristic — e.g. a rolling log shipped WITHOUT the `core-` prefix, or a `.out` whose first lines parsed as log lines), or `weak`. The `why` field states how each file was classified.
+- **`inferred_ranks_unconfirmed`** — ranks seen only via a loose name guess, never confirmed by a canonical pattern or by log content. Treat these as "possible — verify," distinct from `ranks_present`, which stays trustworthy.
+- **`unknown_file_paths`** — files that could not be classified at all. Do NOT ignore them: they may be evidence under an unfamiliar name. Read one with `kinetica_bundle_read_sysinfo` (it returns the raw content / EXEC_CMD blocks) to decide what it holds.
+
+Inference does not make a file second-class: a rolling log recognized without its `core-` prefix is treated exactly like a canonical core log — it appears in `ranks_present` and `kinetica_bundle_search_logs`/`log_timeline` search it normally. The parsers have already been applied for you. Your job: trust `ranks_present` / `services_present`, sanity-check anything marked `inferred` or `unknown`, and state plainly in the report when the evidence came from an off-shape bundle (note the `layout_match`).
+
 ### Two log families — and why every rank is reachable
 
 A bundle carries per-rank logs in up to two places, and the collector host usually holds only a couple of the cluster's ranks:
