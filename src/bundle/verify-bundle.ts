@@ -11,12 +11,18 @@
  */
 
 import { stat } from "node:fs/promises";
-import { createBundleSource, type BundleSource, type BundleInventory } from "./BundleSource.js";
+import {
+  createBundleSource,
+  assessLayout,
+  type BundleSource,
+  type BundleInventory,
+  type BundleLayout,
+} from "./BundleSource.js";
 import type { BundleFileKind } from "./classify-file.js";
 
-// Re-exported for callers that imported the inventory type from here; the single
-// definition now lives with the BundleSource that produces it.
-export type { BundleInventory };
+// Re-exported for callers that imported these from here; the single definitions now
+// live with the BundleSource that produces them.
+export type { BundleInventory, BundleLayout };
 
 export type BundleVerifyResult =
   | {
@@ -26,6 +32,10 @@ export type BundleVerifyResult =
       readonly inventory: BundleInventory;
       /** Expected-but-absent artifact kinds (e.g. "config", "core-log"). Non-fatal. */
       readonly missingExpected: readonly string[];
+      /** How closely the bundle matches the canonical layout. */
+      readonly layout: BundleLayout;
+      /** Operator-facing note when the layout is not canonical (undefined when canonical). */
+      readonly layoutWarning?: string;
     }
   | { readonly ok: false; readonly error: string };
 
@@ -58,6 +68,7 @@ export async function verifyBundle(bundlePath: string): Promise<BundleVerifyResu
 
   const missingExpected = EXPECTED_KINDS.filter((k) => (inventory.byKind[k] ?? 0) === 0);
   const kineticaVersion = await bundleSource.detectVersion();
+  const { layout, layoutWarning } = assessLayout(inventory);
 
   return {
     ok: true,
@@ -65,5 +76,7 @@ export async function verifyBundle(bundlePath: string): Promise<BundleVerifyResu
     ...(kineticaVersion !== undefined ? { kineticaVersion } : {}),
     inventory,
     missingExpected,
+    layout,
+    ...(layoutWarning !== undefined ? { layoutWarning } : {}),
   };
 }

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createBundleSource, type BundleSource } from "./BundleSource.js";
+import {
+  createBundleSource,
+  assessLayout,
+  type BundleSource,
+  type BundleInventory,
+} from "./BundleSource.js";
 
 let dir: string;
 let source: BundleSource;
@@ -193,6 +198,55 @@ describe("inventory", () => {
     expect(inv.byKind["core-log"]).toBe(2);
     expect(inv.ranks).toEqual(["r0", "r1"]);
     expect(inv.totalBytes).toBeGreaterThan(0);
+  });
+});
+
+describe("assessLayout — canonical vs off-shape verdict", () => {
+  // Pure over inventory counts, so we drive the boundaries with synthetic inventories.
+  const inv = (over: Partial<BundleInventory>): BundleInventory => ({
+    totalFiles: 10,
+    totalBytes: 1000,
+    byKind: {},
+    ranks: [],
+    inferredRanks: [],
+    services: [],
+    inferredFiles: 0,
+    unknownFiles: 0,
+    ...over,
+  });
+
+  it("is canonical only when BOTH anchors (config + version-info) are present", () => {
+    const r = assessLayout(inv({ byKind: { config: 1, "version-info": 1, "core-log": 5 } }));
+    expect(r.layout).toBe("canonical");
+    expect(r.layoutWarning).toBeUndefined();
+  });
+
+  it("is partial with a single anchor present", () => {
+    const r = assessLayout(inv({ byKind: { config: 1, "core-log": 5 }, inferredFiles: 1 }));
+    expect(r.layout).toBe("partial");
+    expect(r.layoutWarning).toBeTruthy();
+  });
+
+  it("is unfamiliar with no anchors (a bare logs dump)", () => {
+    const r = assessLayout(
+      inv({ byKind: { "core-log": 5, "component-log": 5 }, inferredFiles: 6 }),
+    );
+    expect(r.layout).toBe("unfamiliar");
+    expect(r.layoutWarning).toMatch(/does not match the canonical/i);
+  });
+
+  it("does NOT treat a stray os-diag .txt as an anchor", () => {
+    // os-diag is only ever the weak .txt fallback — it must not satisfy the anchor count.
+    const r = assessLayout(inv({ byKind: { "os-diag": 1, "core-log": 5 } }));
+    expect(r.layout).toBe("unfamiliar");
+  });
+
+  it("downgrades an anchored bundle to partial when too many files were inferred", () => {
+    // Both anchors present, but inferred fraction at/above the threshold (0.25).
+    const r = assessLayout(
+      inv({ totalFiles: 8, byKind: { config: 1, "version-info": 1 }, inferredFiles: 2 }),
+    );
+    expect(r.layout).toBe("partial");
   });
 });
 

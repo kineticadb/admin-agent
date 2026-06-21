@@ -19,7 +19,9 @@ export interface IniEntry {
   readonly value: string;
 }
 
-const SECTION_RE = /^\[(.+)\]$/;
+/** An INI `[section]` header. Exported so the content sniffer detects a config file
+ *  with the same grammar this parser uses. */
+export const SECTION_RE = /^\[(.+)\]$/;
 
 export function parseIni(content: string): readonly IniEntry[] {
   const entries: IniEntry[] = [];

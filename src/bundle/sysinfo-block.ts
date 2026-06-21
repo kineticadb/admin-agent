@@ -35,7 +35,9 @@ export interface ParsedSysinfo {
 }
 
 const SEPARATOR_RE = /^-{3,}$/;
-const EXEC_CMD_RE = /^EXEC_CMD:\s?(.*)$/;
+/** The `EXEC_CMD:` wrapper line that frames every bundle artifact. Exported so the
+ *  content sniffer keys off the same grammar rather than re-declaring it. */
+export const EXEC_CMD_RE = /^EXEC_CMD:\s?(.*)$/;
 const EXEC_END_RE = /^EXEC_END with exit code (\d+)\s*:?\s*(.*)$/;
 // Log-capture marker that sits between EXEC_CMD and the log body; not output.
 const SHOWING_RE = /^### Showing whole log file\s*:/;

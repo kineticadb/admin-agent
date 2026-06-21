@@ -153,4 +153,130 @@ describe("classifyFile", () => {
   it("falls back to unknown for unrecognized files", () => {
     expect(classifyFile("gpudb_core_bin_gpudb").kind).toBe("unknown");
   });
+
+  // ── Confidence dimension ──────────────────────────────────────────────────
+  it("tags canonical matches with exact confidence", () => {
+    expect(classifyFile("logs-local/core-gpudb-rolling-r0.log").confidence).toBe("exact");
+    expect(classifyFile("gpudb_core_etc_gpudb.conf").confidence).toBe("exact");
+    expect(classifyFile("gpudb.txt").confidence).toBe("exact");
+    expect(classifyFile("logs/rank0.log").confidence).toBe("exact");
+  });
+
+  it("tags an extension-only fallback with weak confidence", () => {
+    expect(classifyFile("mem.txt").confidence).toBe("weak");
+    expect(classifyFile("gpudb_core_bin_gpudb").confidence).toBe("weak");
+  });
+
+  // ── Off-shape (logs-only) layout: rolling logs WITHOUT the `core-` prefix ──
+  it("classifies a rolling log without the `core-` prefix as core-log with the rank", () => {
+    // A logs-only dump ships `gpudb-rolling-r0.log` (no `core-`, no logs-local dir).
+    // The rank is explicit in the name, so the rank is certain even though the layout
+    // is non-canonical — kind stays exact.
+    const c = classifyFile("gpudb-rolling-r3.log");
+    expect(c).toMatchObject({ kind: "core-log", rank: "r3", confidence: "exact" });
+    expect(c.inferredRank).toBeUndefined();
+  });
+
+  it("classifies a ROTATED rolling log without `core-` prefix as core-log with the rank", () => {
+    expect(classifyFile("gpudb-rolling-r4.log.5")).toMatchObject({
+      kind: "core-log",
+      rank: "r4",
+    });
+  });
+
+  it("classifies the host-manager rolling log without `core-` prefix as core-log + service", () => {
+    const c = classifyFile("gpudb-rolling-hm.log");
+    expect(c).toMatchObject({ kind: "core-log", service: "host-manager" });
+    expect(c.rank).toBeUndefined();
+  });
+
+  // ── Off-shape: host-manager auxiliary logs (.out stdout + service log) ─────
+  it("classifies a host-manager .out stdout capture as component-log with the service (inferred)", () => {
+    const c = classifyFile("gpudb-host-manager-DB-6.out");
+    expect(c).toMatchObject({
+      kind: "component-log",
+      service: "host-manager",
+      confidence: "inferred",
+    });
+    expect(c.rank).toBeUndefined();
+  });
+
+  it("classifies a ROTATED host-manager .out (.out.1) the same way", () => {
+    expect(classifyFile("gpudb-host-manager-db.6.out.2")).toMatchObject({
+      kind: "component-log",
+      service: "host-manager",
+    });
+  });
+
+  it("classifies a host-manager service log as component-log with the service (inferred)", () => {
+    expect(classifyFile("gpudb-host-manager-service-DB-6.log")).toMatchObject({
+      kind: "component-log",
+      service: "host-manager",
+      confidence: "inferred",
+    });
+  });
+
+  // ── Off-shape: generic gpudb logs in a flat layout ─────────────────────────
+  it("classifies a flat gpudb service log as component-log (inferred)", () => {
+    const c = classifyFile("gpudb-service-DB-6.log");
+    expect(c).toMatchObject({ kind: "component-log", confidence: "inferred" });
+    expect(c.service).toBeUndefined();
+  });
+
+  it("classifies a flat gpudb.log as component-log (inferred)", () => {
+    expect(classifyFile("gpudb.log")).toMatchObject({
+      kind: "component-log",
+      component: "gpudb",
+      confidence: "inferred",
+    });
+  });
+
+  // ── Off-shape: config and Tier-B catch-alls ────────────────────────────────
+  it("classifies .cfg/.ini as config with inferred confidence", () => {
+    expect(classifyFile("app.cfg")).toMatchObject({ kind: "config", confidence: "inferred" });
+    expect(classifyFile("settings.ini")).toMatchObject({ kind: "config", confidence: "inferred" });
+  });
+
+  it("infers a log-like file inside a log directory even with an unfamiliar name", () => {
+    const c = classifyFile("some-host/log/weird-service.out");
+    expect(c).toMatchObject({ kind: "component-log", confidence: "inferred" });
+  });
+
+  it("extracts an inferred rank from a rank token in an otherwise-unrecognized log name", () => {
+    const c = classifyFile("dump/worker-rank7.out");
+    expect(c).toMatchObject({ kind: "component-log", rank: "r7", inferredRank: true });
+  });
+
+  // ── Folder-name independence ───────────────────────────────────────────────
+  // The bundle directory (and any wrapping folder) can be named ANYTHING — a host
+  // identifier, a ticket number, a random string. Classification must depend only on
+  // the file's own name, never on the containing folder.
+  it("classifies a rank log the same regardless of the containing folder name", () => {
+    for (const p of [
+      "gpudb-rolling-r2.log",
+      "acme-incident-2024/gpudb-rolling-r2.log",
+      "gpudb-sysinfo-db06-gpudb-logs/gpudb-rolling-r2.log",
+      "a-totally-arbitrary-name/nested/gpudb-rolling-r2.log",
+    ]) {
+      expect(classifyFile(p), p).toMatchObject({ kind: "core-log", rank: "r2" });
+    }
+  });
+
+  it("recognizes host-manager logs regardless of the containing folder name", () => {
+    for (const p of [
+      "gpudb-host-manager-anyhost.out",
+      "ticket-9988/gpudb-host-manager-anyhost.out",
+    ]) {
+      expect(classifyFile(p), p).toMatchObject({
+        kind: "component-log",
+        service: "host-manager",
+      });
+    }
+  });
+
+  it("does NOT leak a digit from a folder name into the rank (rank comes from the basename)", () => {
+    // A wrapping folder like "cluster-r9-archive" must not make this an r9 log.
+    const c = classifyFile("cluster-r9-archive/gpudb-rolling-r0.log");
+    expect(c).toMatchObject({ kind: "core-log", rank: "r0" });
+  });
 });

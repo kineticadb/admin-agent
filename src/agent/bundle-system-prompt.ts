@@ -66,7 +66,7 @@ Before gathering evidence, announce a brief 2-3 line plan: restate the issue, li
 
 ### Round 1 — Orient
 
-- ${t}kinetica_bundle_list_files${t} — **ALWAYS FIRST.** Learn the detected version, which ranks are present, what file kinds exist, and how many collections failed.
+- ${t}kinetica_bundle_list_files${t} — **ALWAYS FIRST.** Learn the detected version, which ranks are present, what file kinds exist, and how many collections failed. Check ${t}layout_match${t}: if it is not ${t}canonical${t}, this bundle is off-shape (e.g. a logs-only dump) — read the ${t}layout_note${t}, treat any ${t}unknown_file_paths${t} as evidence to inspect by hand (open one with ${t}kinetica_bundle_read_sysinfo${t}), and trust ${t}ranks_present${t} over ${t}inferred_ranks_unconfirmed${t}. See the support-bundle reference ("When the bundle doesn't match the expected layout").
 - ${t}kinetica_bundle_log_timeline${t} (min_severity: WARN) — get the incident shape: when did WARN/ERROR/FATAL spike, and on which rank?
 
 ### Round 2 — Drill Down

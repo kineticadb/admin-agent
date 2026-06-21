@@ -83,10 +83,77 @@ export interface BundleInventory {
   readonly totalFiles: number;
   readonly totalBytes: number;
   readonly byKind: Readonly<Record<string, number>>;
-  /** Numeric ranks present ("r0", "r1", …) — never includes non-rank services like the host manager. */
+  /**
+   * Numeric ranks present ("r0", "r1", …) from canonical/rolling names or log content —
+   * trustworthy for the true rank count. Never includes non-rank services.
+   */
   readonly ranks: readonly string[];
+  /**
+   * Ranks seen ONLY via a loose name heuristic (a token in an unrecognized file), never
+   * confirmed by a canonical pattern or log content. Kept separate so they don't inflate
+   * the trusted `ranks` count — treat as "possible, verify".
+   */
+  readonly inferredRanks: readonly string[];
   /** Non-rank cluster services whose logs/captures are present (e.g. "host-manager"). */
   readonly services: readonly string[];
+  /** Files whose kind was settled by inference (name/content heuristic), not a canonical match. */
+  readonly inferredFiles: number;
+  /** Files that could not be classified at all. */
+  readonly unknownFiles: number;
+}
+
+/**
+ * How closely a bundle resembles a canonical gpudb_sysinfo capture:
+ *  - canonical  — the expected anchors are present; classification is high-confidence
+ *  - partial    — some anchors present, but notable inference/missing pieces
+ *  - unfamiliar — none of the canonical anchors present (e.g. a bare logs-only dump);
+ *                 sense was made of it entirely by inference
+ */
+export type BundleLayout = "canonical" | "partial" | "unfamiliar";
+
+// Canonical-layout anchors — artifact kinds a normal gpudb_sysinfo bundle always ships
+// and a bare logs dump never does. Deliberately NOT including "os-diag": its only source
+// is the weak `.txt` extension fallback (classify-file has no exact os-diag rule), so a
+// single stray .txt would otherwise count as an anchor and hollow out this signal.
+const ANCHOR_KINDS: readonly string[] = ["config", "version-info"];
+// Both anchors must be present for a bundle to read as canonical.
+const MIN_ANCHORS_FOR_CANONICAL = 2;
+// Above this share of inferred files, even an anchored bundle is only "partial".
+const PARTIAL_INFERRED_FRACTION = 0.25;
+
+/**
+ * Classify how closely a bundle matches the canonical layout, with an operator/agent-
+ * facing warning when it doesn't. Pure — derived entirely from the inventory counts —
+ * so both startup verification and the orientation tool share one verdict.
+ */
+export function assessLayout(inventory: BundleInventory): {
+  layout: BundleLayout;
+  layoutWarning?: string;
+} {
+  const anchorsPresent = ANCHOR_KINDS.filter((k) => (inventory.byKind[k] ?? 0) > 0).length;
+  const inferredFraction =
+    inventory.totalFiles > 0 ? inventory.inferredFiles / inventory.totalFiles : 0;
+
+  let layout: BundleLayout;
+  if (anchorsPresent === 0) layout = "unfamiliar";
+  else if (
+    anchorsPresent >= MIN_ANCHORS_FOR_CANONICAL &&
+    inferredFraction < PARTIAL_INFERRED_FRACTION
+  )
+    layout = "canonical";
+  else layout = "partial";
+
+  if (layout === "canonical") return { layout };
+
+  const bits = [`${inventory.inferredFiles}/${inventory.totalFiles} files classified by inference`];
+  if (inventory.unknownFiles > 0) bits.push(`${inventory.unknownFiles} unclassified`);
+  if (inventory.inferredRanks.length > 0)
+    bits.push(`inferred ranks ${inventory.inferredRanks.join(", ")} (unconfirmed)`);
+  const layoutWarning =
+    layout === "unfamiliar"
+      ? `This bundle does not match the canonical gpudb_sysinfo layout — no config/version/host-diagnostic files were found. Working from inference: ${bits.join("; ")}.`
+      : `This bundle only partially matches the canonical layout: ${bits.join("; ")}.`;
+  return { layout, layoutWarning };
 }
 
 export interface BundleSource {
@@ -217,20 +284,30 @@ export async function createBundleSource(rootDir: string): Promise<BundleSource>
   const inventoryValue: BundleInventory = (() => {
     const byKind: Record<string, number> = {};
     const rankSet = new Set<string>();
+    const inferredRankSet = new Set<string>();
     const serviceSet = new Set<string>();
     let totalBytes = 0;
+    let inferredFiles = 0;
+    let unknownFiles = 0;
     for (const e of index) {
       byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
       totalBytes += e.sizeBytes;
-      if (e.rank) rankSet.add(e.rank);
+      if (e.confidence === "inferred") inferredFiles++;
+      if (e.kind === "unknown") unknownFiles++;
+      if (e.rank) (e.inferredRank ? inferredRankSet : rankSet).add(e.rank);
       if (e.service) serviceSet.add(e.service);
     }
+    // A rank confirmed anywhere outranks a heuristic sighting elsewhere — keep it out
+    // of inferredRanks so the same rank never appears in both lists.
     return {
       totalFiles: index.length,
       totalBytes,
       byKind,
       ranks: [...rankSet].sort(),
+      inferredRanks: [...inferredRankSet].filter((r) => !rankSet.has(r)).sort(),
       services: [...serviceSet].sort(),
+      inferredFiles,
+      unknownFiles,
     };
   })();
 

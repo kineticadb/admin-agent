@@ -199,7 +199,11 @@ export async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    if (result.missingExpected.length > 0) {
+    if (result.layoutWarning !== undefined) {
+      process.stderr.write(
+        pc.yellow(`Warning: ${result.layoutWarning} Diagnosing with what is present.\n`),
+      );
+    } else if (result.missingExpected.length > 0) {
       process.stderr.write(
         pc.yellow(
           `Warning: bundle is missing expected artifact(s): ${result.missingExpected.join(", ")}. ` +
