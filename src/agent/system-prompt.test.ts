@@ -722,6 +722,29 @@ describe("buildSystemPrompt", () => {
     });
   });
 
+  describe("SQL dialect / false-friends guidance (via real references)", () => {
+    it("establishes the PostgreSQL-compatible baseline", async () => {
+      const refs = await loadReferences();
+      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
+      expect(prompt).toContain("PostgreSQL-compatible");
+    });
+
+    it("flags TRY_CAST / SAFE_CAST as invalid and names the valid alternative", async () => {
+      const refs = await loadReferences();
+      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
+      expect(prompt).toContain("TRY_CAST");
+      expect(prompt).toContain("SAFE_CAST");
+      expect(prompt).toMatch(/CAST\(x AS t\)|CONVERT\(x, t\)/);
+    });
+
+    it("warns against timestamp subtraction and backtick identifiers", async () => {
+      const refs = await loadReferences();
+      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
+      expect(prompt).toContain("DATEDIFF");
+      expect(prompt).toMatch(/double quotes/i);
+    });
+  });
+
   describe("mutation tools — evidence checklist", () => {
     it("includes mutation tool descriptions in evidence checklist", () => {
       const prompt = buildSystemPrompt();
