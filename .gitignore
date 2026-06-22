@@ -8,4 +8,4 @@ reports/
 .DS_Store
 .planning/
 .claude/
-gpudb-sysinfo-*/
+bundles/
