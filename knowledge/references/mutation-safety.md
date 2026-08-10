@@ -45,8 +45,10 @@ BEFORE proposing any mutation:
 - Setting `external_files_directory` — filesystem path; potential path
   traversal concern.
 - Setting `flush_to_disk` — can trigger an expensive I/O storm.
-- Worker restart — no REST API exists in Kinetica 7.2. Tell the
-  operator to run `gadmin restart rank <N>` manually instead.
+- Worker restart — no REST API exists in Kinetica 7.2, and Kinetica has
+  no per-rank restart command at all. Hand the operator an out-of-band
+  service command from `service-management.md` (restart the database on
+  the affected host) — never invent a `gadmin`-style rank command.
 - Cache clearing — no safe API exists in Kinetica 7.2. Recommend
   query-side solutions (rewriting the query, adding an index, bumping
   resource group limits) instead of trying to clear caches.
@@ -83,7 +85,9 @@ BEFORE proposing any mutation:
   scratch.
 - Submit the full modified `config_string` (the entire file is
   replaced).
-- Changes require a service restart to take effect — inform the
-  operator.
+- Changes require a database restart to take effect — give the operator
+  the exact commands from `service-management.md` (`systemctl stop gpudb`
+  then `systemctl start gpudb`, as root), not a bare "restart the
+  database".
 - This tool contacts the host manager (port 9300), not the DB engine
   (port 9191).

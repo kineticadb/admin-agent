@@ -771,7 +771,26 @@ describe("buildSystemPrompt", () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
       expect(prompt).toContain("Worker restart");
-      expect(prompt).toContain("gadmin restart rank");
+      expect(prompt).toContain("service-management.md");
+    });
+
+    it("marks `gadmin` service-control commands as wrong rather than prescribing them", async () => {
+      const refs = await loadReferences();
+      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
+      // The reference quotes the bogus commands only inside its "never emit" table.
+      expect(prompt).toContain("WRONG — Never Emit These");
+      expect(prompt).toContain("`gadmin` is not a service-control CLI");
+      // No instruction anywhere tells the operator to RUN one.
+      expect(prompt).not.toMatch(/run `gadmin/);
+      expect(prompt).not.toMatch(/gadmin restart rank <N>` manually/);
+    });
+
+    it("includes the service-management reference with correct systemctl commands", async () => {
+      const refs = await loadReferences();
+      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
+      expect(prompt).toContain("systemctl start gpudb_host_manager");
+      expect(prompt).toContain("/opt/gpudb/core/bin/gpudb");
+      expect(prompt).toContain("There Is No Per-Rank Restart");
     });
 
     it("documents cache clearing as unavailable", async () => {
@@ -911,7 +930,7 @@ describe("buildSystemPrompt", () => {
 
     it("includes investigation strategy for degraded mode", () => {
       const prompt = buildSystemPrompt(undefined, undefined, undefined, undefined, true);
-      expect(prompt).toContain("gadmin status");
+      expect(prompt).toContain("service gpudb status");
       expect(prompt).toContain("rank process statuses");
     });
 

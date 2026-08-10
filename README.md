@@ -428,11 +428,12 @@ References provide domain knowledge (not diagnostic runbooks). Create a `.md` fi
 - `sql-alter-table` — Kinetica 7.2 ALTER TABLE grammar, column property flags, shard-key immutability
 - `sql-create-index` — column index syntax, chunk skip index, when to use which
 - `sql-dialect` — PostgreSQL-baseline mental model + a "false friends" table of cross-dialect SQL that looks valid but fails in Kinetica (e.g. `TRY_CAST`/`SAFE_CAST`, backtick quoting, `NUMERIC` vs `DECIMAL`); steers remediation SQL away from SQL Server/Snowflake/Oracle idioms
+- `service-management` — the only sanctioned start/stop/restart commands: `systemctl` unit names (`gpudb`, `gpudb_host_manager`, `kinetica_stats`, `gpudb-mq`) as root, the `/opt/gpudb/core/bin/gpudb <component>-<directive>` script as the `gpudb` user, full-stack ordering, and a "never emit" table. Notably: `gadmin` is the web GUI, **not** a service-control CLI, and there is **no per-rank restart** — ranks are Host-Manager-supervised
 - `version-quirks-7.2` — endpoint/property differences between 7.2.x and earlier releases
 
 Plus a **bundle-scoped reference** (`support-bundle` — bundle layout, the two per-rank log families, raw + Loki-JSONL log-line formats, severity ordering, file parsing, crash-SQL forensics, and how to work an off-shape bundle via the `layout_match`/confidence signals) that lives in `knowledge/references/bundle/`. It loads in **every** session — even a pure live one — so that a bundle attached mid-session via `kinetica_load_bundle` has its parsing knowledge ready in the (build-once) prompt; the corpus is cached, so the cost to a session that never attaches a bundle is negligible.
 
-> **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~20,000 estimated tokens. Current baseline is ~15.5k tokens (6 playbooks + 10 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
+> **Heads up — prompt budget:** all playbooks and references are front-loaded into a single system prompt at startup, so its token cost grows with the knowledge corpus. A startup tripwire (`agent/prompt-budget.ts`) prints the assembled prompt size under `DEBUG` and warns on stderr once it exceeds ~20,000 estimated tokens. Current baseline is ~17.2k tokens (6 playbooks + 11 references). If you add substantial knowledge and trip that warning, treat it as the cue to switch from "load everything" to keyword-based playbook selection.
 
 ## Development
 

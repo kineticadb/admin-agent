@@ -124,7 +124,7 @@ export function buildSystemPrompt(
 4. Check ${t}license_status${t} and ${t}license_expiration${t} for license issues
 5. Check service statuses: ${t}ml_status${t}, ${t}query_planner_status${t}, ${t}reveal_status${t}, ${t}graph0_status${t}, ${t}text0_status${t}
 6. Report findings and clearly note that full diagnostics require the DB engine to be running
-7. Recommend the operator check: process logs (${t}/opt/gpudb/core/logs/${t}), ${t}gadmin status${t}, disk space, and network connectivity
+7. Recommend the operator check: process logs (${t}/opt/gpudb/core/logs/${t}), service status (${t}service gpudb status${t} as root, or ${t}/opt/gpudb/core/bin/gpudb gpudb-status${t} as the gpudb user), disk space, and network connectivity. Use only the commands in the service-management reference — there is no ${t}gadmin${t} service-control CLI.
 
 ### Report adjustments for degraded mode:
 - Evidence Gaps MUST include: "DB engine unreachable (port 9191) — all DB-dependent diagnostic tools unavailable"
