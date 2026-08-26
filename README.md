@@ -495,6 +495,7 @@ src/
 knowledge/
   playbooks/    # Diagnostic runbooks (Markdown + YAML frontmatter)
   references/   # Domain knowledge documents (bundle/ subdir = offline-only refs)
+docs/           # Architecture reference (open architecture.html in a browser)
 reports/        # Generated diagnostic reports (git-ignored)
 ```
 
@@ -504,7 +505,10 @@ CI (`.github/workflows/ci.yml`) runs type-check, test, and bundle build against 
 
 ### Architecture
 
-For a detailed architecture reference (startup flow, tool internals, output pipeline, type contracts, API quirks), see [CLAUDE.md](CLAUDE.md).
+Two complementary references:
+
+- **[docs/architecture.html](docs/architecture.html)** — visual walkthrough. Four diagrams: the process boundary and its tool groups, the startup sequence and its live/bundle fork, the two nested loops a user prompt travels through (turn loop and tool loop, joined by the `TurnGate`), and the 5-round investigation protocol with its approval and save-consent pauses. Closes with a table mapping each guardrail to the file that enforces it. Open it in a browser — no build step.
+- **[CLAUDE.md](CLAUDE.md)** — prose reference. Startup flow, tool internals, output pipeline, type contracts, and Kinetica API quirks.
 
 ## Contributing
 
