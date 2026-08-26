@@ -2,7 +2,9 @@
  * Agent loop orchestration for the Kinetica diagnostic agent.
  *
  * Responsibilities:
- * - Creates the in-process MCP server exposing all 22 tools (16 diagnostic + 4 mutation + save_report + alter_table_columns)
+ * - Creates the in-process MCP server exposing the composed tool set — up to 28 in a live
+ *   session (16 diagnostic + 4 mutation + alter_table_columns + 6 bundle + save_report),
+ *   or 7 in bundle-only mode (bundle tools are always registered; live tools are not)
  * - Uses explicit allowedTools list for diagnostic tools (mutation tools excluded for approval gate)
  * - Wires canUseTool callback for defense-in-depth approval on non-allowed tools
  * - Starts a streaming query with the system prompt and async-iterable prompt
@@ -181,7 +183,7 @@ export const ALLOWED_TOOL_NAMES = [
 ];
 
 /**
- * Allow-list for offline bundle mode: the 5 read-only bundle tools + save_report.
+ * Allow-list for offline bundle mode: the 6 read-only bundle tools + save_report.
  * No mutation/diagnostic live tools — they aren't even constructed in bundle mode.
  */
 export const BUNDLE_ALLOWED_TOOL_NAMES = [
