@@ -1,0 +1,1385 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="How admin-agent boots, what it holds in memory, and the path a single operator prompt takes on its way to a root-cause report."
+    />
+    <!--
+  admin-agent architecture reference. Standalone: no build step, no bundler.
+  Open it in a browser, or serve docs/ statically.
+
+  Web fonts load from Google Fonts; offline the page falls back to the local
+  stacks declared alongside each family, so it stays readable either way.
+  Deliberately single-theme: the palette is light in every context, so the page
+  reads the same on a dark-OS machine as on a light one. color-scheme: light
+  keeps browser chrome (scrollbars) in step with it.
+-->
+    <style>
+      /* Minimal reset — everything else is set explicitly below. */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+      }
+      svg,
+      img {
+        display: block;
+        max-width: 100%;
+      }
+    </style>
+    <title>admin-agent Anatomy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap"
+    />
+
+    <style>
+      :root {
+        color-scheme: light;
+
+        --ground: #fbfafc;
+        --surface: #f4f1f8;
+        --surface-2: #ece7f2;
+        --ink: #1a1523;
+        --ink-2: #4c4459;
+        --ink-3: #7a7089;
+        --rule: #ddd5e7;
+        --accent: #c4185f;
+        --accent-soft: #fbe8f0;
+        --machine: #6a5a93;
+        --machine-soft: #ede9f5;
+
+        --sans: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+        --serif: "Newsreader", Georgia, "Times New Roman", serif;
+        --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+        --spine: 68ch;
+        --band: 1080px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--ground);
+        color: var(--ink);
+        font-family: var(--serif);
+        font-size: 17px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        padding: 0 24px 120px;
+      }
+
+      .spine {
+        width: 100%;
+        max-width: var(--spine);
+        margin: 0 auto;
+      }
+      .band {
+        width: 100%;
+        max-width: var(--band);
+        margin: 0 auto;
+      }
+
+      /* ---- masthead ---- */
+      header.masthead {
+        max-width: var(--band);
+        margin: 0 auto;
+        padding: 72px 0 40px;
+        border-bottom: 1px solid var(--rule);
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-3);
+      }
+      h1 {
+        font-family: var(--sans);
+        font-weight: 700;
+        font-size: clamp(2.6rem, 6vw, 4.2rem);
+        line-height: 1.02;
+        letter-spacing: -0.025em;
+        margin: 0;
+        text-wrap: balance;
+      }
+      h1 .thin {
+        color: var(--ink-3);
+        font-weight: 500;
+      }
+      .standfirst {
+        max-width: 62ch;
+        font-size: 1.22rem;
+        line-height: 1.55;
+        color: var(--ink-2);
+        margin: 0;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 10px;
+        margin-top: 6px;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.02em;
+        padding: 4px 9px;
+        border: 1px solid var(--rule);
+        border-radius: 3px;
+        color: var(--ink-2);
+        background: var(--surface);
+      }
+      .chip.hot {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      /* ---- sections ---- */
+      section {
+        padding-top: 64px;
+      }
+      .sec-head {
+        max-width: var(--band);
+        margin: 0 auto 8px;
+      }
+      .sec-head .eyebrow {
+        display: block;
+        margin-bottom: 10px;
+      }
+      h2 {
+        font-family: var(--sans);
+        font-weight: 600;
+        font-size: clamp(1.7rem, 3.4vw, 2.35rem);
+        line-height: 1.12;
+        letter-spacing: -0.018em;
+        margin: 0;
+        text-wrap: balance;
+      }
+      h3 {
+        font-family: var(--sans);
+        font-weight: 600;
+        font-size: 1.12rem;
+        letter-spacing: -0.005em;
+        margin: 34px 0 6px;
+      }
+      p {
+        margin: 0 0 1.05em;
+      }
+      .spine p,
+      .spine ul,
+      .spine ol {
+        max-width: var(--spine);
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
+      }
+      strong {
+        font-weight: 600;
+        color: var(--ink);
+      }
+
+      code,
+      .m {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        border-radius: 3px;
+        padding: 1px 5px;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+      .path {
+        color: var(--ink-2);
+      }
+
+      /* ---- figures ---- */
+      figure {
+        margin: 30px auto 8px;
+        max-width: var(--band);
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .fig-scroll {
+        overflow-x: auto;
+        border: 1px solid var(--rule);
+        border-radius: 8px;
+        background: var(--surface);
+        padding: 22px 18px;
+      }
+      figure svg {
+        display: block;
+        width: 100%;
+        min-width: 720px;
+        height: auto;
+        color: var(--ink-2);
+      }
+      figcaption {
+        font-family: var(--sans);
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: var(--ink-3);
+        max-width: 78ch;
+      }
+      figcaption b {
+        color: var(--ink-2);
+        font-weight: 600;
+      }
+
+      /* svg text roles */
+      .t-title {
+        font-family: var(--sans);
+        font-weight: 600;
+        font-size: 13px;
+        fill: var(--ink);
+      }
+      .t-sub {
+        font-family: var(--sans);
+        font-weight: 500;
+        font-size: 10.5px;
+        fill: var(--ink-2);
+      }
+      .t-mono {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 11px;
+        fill: var(--ink-2);
+      }
+      .t-code {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 12px;
+        fill: var(--ink);
+      }
+      .t-lane {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        fill: var(--ink-3);
+      }
+      .t-edge {
+        font-family: var(--mono);
+        font-weight: 400;
+        font-size: 10.5px;
+        fill: var(--ink-3);
+      }
+      .t-hot {
+        fill: var(--accent);
+      }
+      .t-dim {
+        fill: var(--ink-3);
+      }
+
+      .box {
+        fill: var(--ground);
+        stroke: var(--rule);
+        stroke-width: 1.4;
+      }
+      .box-hot {
+        fill: var(--accent-soft);
+        stroke: var(--accent);
+        stroke-width: 1.6;
+      }
+      .box-machine {
+        fill: var(--machine-soft);
+        stroke: var(--machine);
+        stroke-width: 1.6;
+      }
+      .box-ghost {
+        fill: none;
+        stroke: var(--ink-3);
+        stroke-width: 1.2;
+        stroke-dasharray: 5 4;
+      }
+      .lane {
+        fill: var(--surface-2);
+        stroke: var(--rule);
+        stroke-width: 1.2;
+        stroke-dasharray: 5 5;
+      }
+      .row {
+        fill: var(--surface);
+        stroke: var(--rule);
+        stroke-width: 1.1;
+      }
+
+      .edge {
+        fill: none;
+        stroke: var(--ink-2);
+        stroke-width: 1.5;
+      }
+      .edge-hot {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 1.7;
+      }
+      .edge-dash {
+        fill: none;
+        stroke: var(--ink-3);
+        stroke-width: 1.4;
+        stroke-dasharray: 6 4;
+      }
+      .node-dot {
+        fill: var(--ink-2);
+      }
+
+      /* ---- table ---- */
+      .table-scroll {
+        max-width: var(--band);
+        margin: 26px auto 0;
+        overflow-x: auto;
+        border: 1px solid var(--rule);
+        border-radius: 8px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        min-width: 640px;
+        background: var(--ground);
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 13px 16px;
+        border-bottom: 1px solid var(--rule);
+        vertical-align: top;
+      }
+      th {
+        font-family: var(--sans);
+        font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-3);
+        background: var(--surface);
+        white-space: nowrap;
+      }
+      td {
+        font-size: 0.94rem;
+        line-height: 1.5;
+        color: var(--ink-2);
+      }
+      td:first-child {
+        font-family: var(--sans);
+        font-weight: 600;
+        color: var(--ink);
+        font-size: 0.95rem;
+        white-space: nowrap;
+      }
+      td:last-child {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+
+      /* ---- stage list ---- */
+      ol.stages {
+        list-style: none;
+        padding: 0;
+        margin: 26px auto 0;
+        max-width: var(--spine);
+        counter-reset: st;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      ol.stages li {
+        counter-increment: st;
+        display: grid;
+        grid-template-columns: 34px 1fr;
+        gap: 16px;
+      }
+      ol.stages li::before {
+        content: counter(st, decimal-leading-zero);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent);
+        padding-top: 5px;
+        letter-spacing: 0.02em;
+      }
+      ol.stages li > div > b {
+        font-family: var(--sans);
+        font-weight: 600;
+        color: var(--ink);
+        display: block;
+        font-size: 1rem;
+      }
+      ol.stages li > div > span {
+        color: var(--ink-2);
+        font-size: 0.98rem;
+      }
+
+      ul.tight {
+        padding-left: 1.1em;
+      }
+      ul.tight li {
+        margin-bottom: 0.4em;
+        color: var(--ink-2);
+      }
+
+      .note {
+        max-width: var(--spine);
+        margin: 28px auto 0;
+        border-left: 2px solid var(--accent);
+        background: var(--accent-soft);
+        padding: 16px 20px;
+        border-radius: 0 5px 5px 0;
+      }
+      .note p {
+        margin: 0;
+        font-size: 0.98rem;
+        color: var(--ink-2);
+      }
+      .note .eyebrow {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--accent);
+      }
+
+      hr.rule {
+        border: none;
+        border-top: 1px solid var(--rule);
+        max-width: var(--band);
+        margin: 0 auto;
+      }
+
+      footer {
+        max-width: var(--band);
+        margin: 80px auto 0;
+        padding-top: 24px;
+        border-top: 1px solid var(--rule);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-3);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 20px;
+      }
+
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        html {
+          scroll-behavior: smooth;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="masthead">
+        <span class="eyebrow">Kinetica diagnostic agent · architecture</span>
+        <h1>admin-agent <span class="thin">anatomy</span></h1>
+        <p class="standfirst">
+          How the process boots, what it holds in memory, and the exact path a single sentence typed
+          at the prompt takes on its way to a root-cause report.
+        </p>
+        <div class="meta-row">
+          <span class="chip">Claude Agent SDK</span>
+          <span class="chip">28 tools max</span>
+          <span class="chip">2 nested loops</span>
+          <span class="chip hot">pink = a human decides</span>
+        </div>
+      </header>
+
+      <section id="map">
+        <div class="sec-head">
+          <span class="eyebrow">The map</span>
+          <h2>One process, three neighbours</h2>
+        </div>
+        <div class="spine">
+          <p>
+            The agent is a single Node process that sits between an operator's terminal and three
+            outside things: the Anthropic API, a live Kinetica cluster, and — optionally — an
+            extracted support bundle on disk. Everything interesting happens inside that middle
+            lane.
+          </p>
+          <p>
+            The most load-bearing fact about the lane is what it <em>cannot</em> reach.
+            <code>Bash</code>, <code>Edit</code>, <code>Write</code> and <code>MultiEdit</code> are
+            in the SDK's deny list, and deny beats every allow — so the model's only way to affect
+            the world is through tools this codebase wrote and named.
+          </p>
+        </div>
+
+        <figure>
+          <div class="fig-scroll">
+            <svg
+              viewBox="0 0 1080 545"
+              role="img"
+              aria-label="The admin-agent process sits between the operator's terminal on the left and the Anthropic API, Kinetica database, host manager and support bundle on the right. Inside it: the system prompt builder, the SDK query, an in-process MCP server holding four tool groups, and the output pipeline."
+            >
+              <defs>
+                <marker
+                  id="a1"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"></path>
+                </marker>
+                <marker
+                  id="a1s"
+                  viewBox="0 0 10 10"
+                  refX="1"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M10 0 L0 5 L10 10 z" fill="var(--ink-2)"></path>
+                </marker>
+              </defs>
+
+              <text class="t-lane" x="30" y="26">TERMINAL</text>
+              <text class="t-lane" x="370" y="26">admin-agent PROCESS</text>
+              <text class="t-lane" x="800" y="26">OUTSIDE</text>
+
+              <rect class="lane" x="350" y="40" width="400" height="470" rx="10"></rect>
+
+              <!-- terminal column -->
+              <rect class="box-hot" x="30" y="155" width="270" height="64" rx="6"></rect>
+              <text class="t-title" x="165" y="181" text-anchor="middle">stdin</text>
+              <text class="t-mono t-hot" x="165" y="200" text-anchor="middle">
+                issue · follow-ups · y/n/explain
+              </text>
+
+              <rect class="box" x="30" y="280" width="270" height="64" rx="6"></rect>
+              <text class="t-title" x="165" y="306" text-anchor="middle">stderr</text>
+              <text class="t-mono" x="165" y="325" text-anchor="middle">
+                streamed markdown + tables
+              </text>
+
+              <rect class="box" x="30" y="430" width="270" height="64" rx="6"></rect>
+              <text class="t-code" x="165" y="456" text-anchor="middle">
+                reports/kinetica-diag-*.md
+              </text>
+              <text class="t-sub t-dim" x="165" y="474" text-anchor="middle">
+                URLs, headers, passwords scrubbed
+              </text>
+
+              <!-- process column -->
+              <rect class="box" x="370" y="60" width="360" height="72" rx="6"></rect>
+              <text class="t-code" x="550" y="84" text-anchor="middle">buildSystemPrompt()</text>
+              <text class="t-sub" x="550" y="102" text-anchor="middle">
+                6 playbooks · 12 references · 18 catalog schemas
+              </text>
+              <text class="t-sub t-dim" x="550" y="119" text-anchor="middle">
+                ~17.2k tokens, built once, cached by the SDK
+              </text>
+
+              <rect class="box-machine" x="370" y="155" width="360" height="64" rx="6"></rect>
+              <text class="t-title" x="550" y="181" text-anchor="middle">
+                Claude Agent SDK — query()
+              </text>
+              <text class="t-mono" x="550" y="200" text-anchor="middle">
+                sonnet | haiku | opus · fallback haiku
+              </text>
+
+              <rect class="box" x="370" y="245" width="360" height="170" rx="6"></rect>
+              <text class="t-mono t-dim" x="550" y="267" text-anchor="middle">
+                in-process MCP server "kinetica-diagnostics"
+              </text>
+              <rect class="row" x="386" y="276" width="328" height="26" rx="4"></rect>
+              <text class="t-mono" x="398" y="293">16 diagnostic — allow-listed</text>
+              <rect
+                class="row"
+                x="386"
+                y="308"
+                width="328"
+                height="26"
+                rx="4"
+                stroke="var(--accent)"
+              ></rect>
+              <text class="t-mono t-hot" x="398" y="325">
+                4 mutation + alter_table_columns — gated
+              </text>
+              <rect class="row" x="386" y="340" width="328" height="26" rx="4"></rect>
+              <text class="t-mono" x="398" y="357">6 bundle, file-backed — read-only</text>
+              <rect class="row" x="386" y="372" width="328" height="26" rx="4"></rect>
+              <text class="t-mono" x="398" y="389">save_report — consent asked in chat</text>
+
+              <rect class="box" x="370" y="430" width="360" height="64" rx="6"></rect>
+              <text class="t-code" x="550" y="456" text-anchor="middle">
+                formatOutput → truncateOutput
+              </text>
+              <text class="t-sub t-dim" x="550" y="474" text-anchor="middle">
+                every tool result: head 150 + tail 50 lines
+              </text>
+
+              <!-- outside column -->
+              <rect class="box" x="800" y="163" width="250" height="48" rx="6"></rect>
+              <text class="t-title" x="925" y="192" text-anchor="middle">Anthropic API</text>
+
+              <rect class="box" x="800" y="225" width="250" height="48" rx="6"></rect>
+              <text class="t-title" x="925" y="246" text-anchor="middle">Kinetica DB engine</text>
+              <text class="t-mono" x="925" y="264" text-anchor="middle">:9191</text>
+
+              <rect class="box" x="800" y="290" width="250" height="48" rx="6"></rect>
+              <text class="t-title" x="925" y="311" text-anchor="middle">Host Manager</text>
+              <text class="t-mono" x="925" y="329" text-anchor="middle">:9300 — no auth</text>
+
+              <rect class="box" x="800" y="355" width="250" height="56" rx="6"></rect>
+              <text class="t-title" x="925" y="377" text-anchor="middle">
+                extracted support bundle
+              </text>
+              <text class="t-mono" x="925" y="395" text-anchor="middle">
+                read-only, path-confined
+              </text>
+
+              <rect class="box-ghost" x="800" y="443" width="250" height="54" rx="6"></rect>
+              <text class="t-title t-dim" x="925" y="466" text-anchor="middle">
+                never reachable
+              </text>
+              <text class="t-mono t-dim" x="925" y="484" text-anchor="middle">
+                Bash · Edit · Write · MultiEdit
+              </text>
+
+              <!-- edges -->
+              <path class="edge-hot" d="M 300 187 H 370" marker-end="url(#a1)"></path>
+              <text class="t-edge t-hot" x="335" y="180" text-anchor="middle">prompt</text>
+
+              <path class="edge" d="M 370 187 H 358 V 312 H 300" marker-end="url(#a1)"></path>
+              <text class="t-edge" x="330" y="303" text-anchor="middle">text deltas</text>
+
+              <path class="edge" d="M 370 462 H 300" marker-end="url(#a1)"></path>
+              <text class="t-edge" x="335" y="455" text-anchor="middle">save_report</text>
+
+              <path
+                class="edge"
+                d="M 730 187 H 800"
+                marker-end="url(#a1)"
+                marker-start="url(#a1s)"
+              ></path>
+              <text class="t-edge" x="765" y="180" text-anchor="middle">HTTPS</text>
+
+              <path class="edge" d="M 730 330 H 766"></path>
+              <circle class="node-dot" cx="766" cy="330" r="3.5"></circle>
+              <path class="edge" d="M 766 330 V 249 H 800" marker-end="url(#a1)"></path>
+              <path class="edge" d="M 766 330 V 314 H 800" marker-end="url(#a1)"></path>
+              <path class="edge" d="M 766 330 V 383 H 800" marker-end="url(#a1)"></path>
+              <text class="t-edge" x="760" y="245" text-anchor="end">9191</text>
+              <text class="t-edge" x="760" y="308" text-anchor="end">9300</text>
+              <text class="t-edge" x="760" y="379" text-anchor="end">disk</text>
+
+              <path class="edge" d="M 550 132 V 155" marker-end="url(#a1)"></path>
+              <path class="edge" d="M 550 219 V 245" marker-end="url(#a1)"></path>
+              <path
+                class="edge"
+                d="M 550 415 V 430"
+                marker-end="url(#a1)"
+                marker-start="url(#a1s)"
+              ></path>
+            </svg>
+          </div>
+          <figcaption>
+            <b>Figure 1 — the process boundary.</b> Knowledge is assembled once into a cached system
+            prompt; tools are the only outward path, and each group carries its own permission
+            posture. The dashed box on the right is the capability the SDK is explicitly denied.
+          </figcaption>
+        </figure>
+      </section>
+
+      <hr class="rule" />
+
+      <section id="boot">
+        <div class="sec-head">
+          <span class="eyebrow">Before the first prompt</span>
+          <h2>Boot, and the one fork in it</h2>
+        </div>
+        <div class="spine">
+          <p>
+            Startup is deliberately ordered so the cheapest failure happens first. Flags are
+            validated before any side effect; Anthropic auth runs <em>before</em> Kinetica
+            credentials are collected, so a session with no plausible auth path dies before anyone
+            types a password.
+          </p>
+        </div>
+
+        <figure>
+          <div class="fig-scroll">
+            <svg
+              viewBox="0 0 1000 500"
+              role="img"
+              aria-label="Boot sequence: parse argv, load env and print banner, pick a model, authenticate with Anthropic, then fork on the bundle flag into either connectWithRetry or verifyBundle, both converging on runAgent."
+            >
+              <defs>
+                <marker
+                  id="a2"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"></path>
+                </marker>
+              </defs>
+
+              <rect class="box" x="330" y="20" width="340" height="48" rx="6"></rect>
+              <text class="t-code" x="500" y="42" text-anchor="middle">parse argv</text>
+              <text class="t-sub t-dim" x="500" y="60" text-anchor="middle">
+                --model · --bundle · --max-budget, validated up front
+              </text>
+
+              <rect class="box" x="330" y="90" width="340" height="48" rx="6"></rect>
+              <text class="t-code" x="500" y="112" text-anchor="middle">
+                loadEnvFile() · printBanner()
+              </text>
+              <text class="t-sub t-dim" x="500" y="130" text-anchor="middle">
+                .env fills gaps; shell variables always win
+              </text>
+
+              <rect class="box-hot" x="330" y="160" width="340" height="48" rx="6"></rect>
+              <text class="t-code" x="500" y="182" text-anchor="middle">selectModel()</text>
+              <text class="t-sub t-hot" x="500" y="200" text-anchor="middle">
+                interactive TTY only, never persisted
+              </text>
+
+              <rect class="box-hot" x="330" y="230" width="340" height="48" rx="6"></rect>
+              <text class="t-code" x="500" y="252" text-anchor="middle">
+                authenticateAnthropic()
+              </text>
+              <text class="t-sub t-hot" x="500" y="270" text-anchor="middle">
+                API key → cached OAuth → browser handshake
+              </text>
+
+              <path class="edge" d="M 500 68 V 90" marker-end="url(#a2)"></path>
+              <path class="edge" d="M 500 138 V 160" marker-end="url(#a2)"></path>
+              <path class="edge" d="M 500 208 V 230" marker-end="url(#a2)"></path>
+              <path class="edge" d="M 500 278 V 296"></path>
+              <circle class="node-dot" cx="500" cy="296" r="3.5"></circle>
+              <path class="edge" d="M 500 296 H 250 V 316" marker-end="url(#a2)"></path>
+              <path class="edge" d="M 500 296 H 750 V 316" marker-end="url(#a2)"></path>
+              <text class="t-edge" x="370" y="290" text-anchor="middle">no --bundle</text>
+              <text class="t-edge" x="630" y="290" text-anchor="middle">--bundle=DIR</text>
+
+              <rect class="box" x="60" y="316" width="380" height="76" rx="6"></rect>
+              <text class="t-code" x="250" y="340" text-anchor="middle">connectWithRetry()</text>
+              <text class="t-sub" x="250" y="358" text-anchor="middle">
+                resolveUrl → collectCredentials → verify version
+              </text>
+              <text class="t-sub t-dim" x="250" y="376" text-anchor="middle">
+                401 re-prompts twice · 9191 dead → probe 9300, run degraded
+              </text>
+
+              <rect class="box" x="560" y="316" width="380" height="76" rx="6"></rect>
+              <text class="t-code" x="750" y="340" text-anchor="middle">verifyBundle(dir)</text>
+              <text class="t-sub" x="750" y="358" text-anchor="middle">
+                classify files · detect version · judge the layout
+              </text>
+              <text class="t-sub t-dim" x="750" y="376" text-anchor="middle">
+                then connectBestEffort() — attach live too, if it answers
+              </text>
+
+              <path class="edge" d="M 250 392 V 412 H 400 V 430" marker-end="url(#a2)"></path>
+              <path class="edge" d="M 750 392 V 412 H 600 V 430" marker-end="url(#a2)"></path>
+
+              <rect class="box-machine" x="250" y="430" width="500" height="52" rx="6"></rect>
+              <text class="t-code" x="500" y="454" text-anchor="middle">
+                runAgent(session?, version, degraded, model, opts)
+              </text>
+              <text class="t-sub" x="500" y="472" text-anchor="middle">
+                requires a live session, a bundle, or both
+              </text>
+            </svg>
+          </div>
+          <figcaption>
+            <b>Figure 2 — startup.</b> Live connection and support bundle are composable
+            capabilities, not exclusive modes: both branches converge on the same
+            <span class="m">runAgent</span>, which refuses only when it has neither.
+          </figcaption>
+        </figure>
+
+        <div class="spine">
+          <h3>What gets assembled at the bottom of that funnel</h3>
+          <p>
+            Before the loop starts, <span class="m">runAgent</span> runs four independent loads in
+            parallel — catalog schema discovery (skipped without a live engine), playbooks,
+            references, and bundle references — then builds one system prompt and checks its size.
+            Bundle references load in <em>every</em> session, even one that never attaches a bundle,
+            because the prompt is built once and a mid-session
+            <span class="m">kinetica_load_bundle</span> would otherwise drive those tools blind.
+          </p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
+      <section id="loop">
+        <div class="sec-head">
+          <span class="eyebrow">The core mechanism</span>
+          <h2>One prompt, end to end</h2>
+        </div>
+        <div class="spine">
+          <p>
+            Type <em>"queries are timing out on rank 3"</em> and two loops start turning. They meet
+            at the model, and they run at different speeds: the outer <b>turn loop</b> ticks once
+            per operator sentence; the inner <b>tool loop</b> may spin a dozen times inside a single
+            turn without the operator ever getting the prompt back.
+          </p>
+          <p>
+            What keeps them from colliding is a 45-line primitive: the
+            <span class="m">TurnGate</span>. It is a promise that the prompt generator awaits and
+            the message loop resolves — closed when a message is yielded, opened only on
+            <span class="m">stop_reason: "end_turn"</span>. Open it on
+            <span class="m">tool_use</span> instead and the operator would be asked for input in the
+            middle of the agent's own investigation.
+          </p>
+        </div>
+
+        <figure>
+          <div class="fig-scroll">
+            <svg
+              viewBox="0 0 1080 545"
+              role="img"
+              aria-label="A user prompt flows through two loops meeting at the Claude model: a turn loop between the terminal and the model, opened and closed by the TurnGate, and a tool loop in which each tool call is either allow-listed or routed through the human approval gate before hitting Kinetica."
+            >
+              <defs>
+                <marker
+                  id="a3"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"></path>
+                </marker>
+                <marker
+                  id="a3h"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"></path>
+                </marker>
+              </defs>
+
+              <text class="t-lane" x="50" y="30">TURN LOOP</text>
+              <text class="t-lane" x="760" y="30">TOOL LOOP</text>
+
+              <!-- operator lane -->
+              <rect class="box-hot" x="50" y="56" width="250" height="56" rx="6"></rect>
+              <text class="t-code" x="175" y="80" text-anchor="middle">input()</text>
+              <text class="t-sub t-hot" x="175" y="98" text-anchor="middle">
+                "Describe the issue to investigate:"
+              </text>
+
+              <rect class="box" x="50" y="430" width="250" height="60" rx="6"></rect>
+              <text class="t-code" x="175" y="454" text-anchor="middle">tableAligner.push()</text>
+              <text class="t-sub t-dim" x="175" y="472" text-anchor="middle">
+                line-buffered → stderr, tables aligned
+              </text>
+
+              <!-- model -->
+              <rect class="box-machine" x="400" y="250" width="260" height="76" rx="6"></rect>
+              <text class="t-title" x="530" y="276" text-anchor="middle">Claude</text>
+              <text class="t-mono" x="530" y="295" text-anchor="middle">
+                systemPrompt served from cache
+              </text>
+              <text class="t-mono t-dim" x="530" y="313" text-anchor="middle">
+                maxTurns 100 · budget guard $5
+              </text>
+
+              <!-- tool lane -->
+              <rect class="box" x="760" y="56" width="250" height="56" rx="6"></rect>
+              <text class="t-title" x="885" y="80" text-anchor="middle">in allowedTools?</text>
+              <text class="t-mono t-dim" x="885" y="98" text-anchor="middle">
+                16 diagnostic · save_report
+              </text>
+
+              <rect class="box-hot" x="760" y="152" width="250" height="64" rx="6"></rect>
+              <text class="t-title" x="885" y="175" text-anchor="middle">
+                canUseTool → approval panel
+              </text>
+              <text class="t-mono t-hot" x="885" y="193" text-anchor="middle">y / n / explain</text>
+              <text class="t-sub t-dim" x="885" y="209" text-anchor="middle">
+                deny → "skip and continue"
+              </text>
+
+              <rect class="box" x="760" y="252" width="250" height="56" rx="6"></rect>
+              <text class="t-title" x="885" y="276" text-anchor="middle">tool handler</text>
+              <text class="t-mono" x="885" y="294" text-anchor="middle">session.makeRequest()</text>
+
+              <rect class="box" x="760" y="348" width="250" height="56" rx="6"></rect>
+              <text class="t-title" x="885" y="372" text-anchor="middle">Kinetica</text>
+              <text class="t-mono" x="885" y="390" text-anchor="middle">
+                :9191 REST · :9300 host mgr
+              </text>
+
+              <rect class="box" x="760" y="444" width="250" height="64" rx="6"></rect>
+              <text class="t-mono" x="885" y="466" text-anchor="middle">
+                parseDataStr → formatOutput
+              </text>
+              <text class="t-mono" x="885" y="483" text-anchor="middle">
+                → truncateOutput(150 + 50)
+              </text>
+              <text class="t-sub t-dim" x="885" y="500" text-anchor="middle">tool_result</text>
+
+              <!-- turn loop edges -->
+              <path class="edge-hot" d="M 175 112 V 288 H 400" marker-end="url(#a3h)"></path>
+              <text class="t-edge t-hot" x="185" y="142">yield SDKUserMessage</text>
+              <text class="t-edge t-hot" x="185" y="160">turnGate.close()</text>
+
+              <path class="edge" d="M 400 306 H 350 V 460 H 300" marker-end="url(#a3)"></path>
+              <text class="t-edge" x="344" y="382" text-anchor="end">text_delta</text>
+              <text class="t-edge" x="344" y="398" text-anchor="end">stream_event</text>
+
+              <path class="edge-hot" d="M 50 460 H 30 V 84 H 50" marker-end="url(#a3h)"></path>
+              <text
+                class="t-edge t-hot"
+                transform="rotate(-90 20 272)"
+                x="20"
+                y="272"
+                text-anchor="middle"
+              >
+                end_turn → turnGate.open()
+              </text>
+
+              <!-- tool loop edges -->
+              <path class="edge" d="M 660 274 H 710 V 84 H 760" marker-end="url(#a3)"></path>
+              <text
+                class="t-edge"
+                transform="rotate(-90 700 180)"
+                x="700"
+                y="180"
+                text-anchor="middle"
+              >
+                stop_reason: tool_use
+              </text>
+
+              <path class="edge-hot" d="M 885 112 V 152" marker-end="url(#a3h)"></path>
+              <text class="t-edge t-hot" x="895" y="137">not listed</text>
+              <path class="edge-hot" d="M 885 216 V 252" marker-end="url(#a3h)"></path>
+              <text class="t-edge t-hot" x="895" y="239">allow</text>
+
+              <path class="edge" d="M 1010 84 H 1046 V 280 H 1010" marker-end="url(#a3)"></path>
+              <text
+                class="t-edge"
+                transform="rotate(-90 1062 182)"
+                x="1062"
+                y="182"
+                text-anchor="middle"
+              >
+                read-only → no prompt
+              </text>
+
+              <path class="edge" d="M 885 308 V 348" marker-end="url(#a3)"></path>
+              <text class="t-edge" x="895" y="333">REST</text>
+              <path class="edge" d="M 885 404 V 444" marker-end="url(#a3)"></path>
+              <text class="t-edge" x="895" y="429">data_str</text>
+
+              <path class="edge" d="M 760 476 H 710 V 310 H 660" marker-end="url(#a3)"></path>
+              <text
+                class="t-edge"
+                transform="rotate(-90 700 400)"
+                x="700"
+                y="400"
+                text-anchor="middle"
+              >
+                tool_result → next tool_use
+              </text>
+            </svg>
+          </div>
+          <figcaption>
+            <b>Figure 3 — the two loops.</b> Pink marks the three places the process stops and waits
+            for a person: the opening prompt, the approval panel on any tool outside the allow-list,
+            and the gate reopening for the next <span class="m">"You:"</span>. Everything else runs
+            unattended.
+          </figcaption>
+        </figure>
+
+        <ol class="stages">
+          <li>
+            <div>
+              <b>The generator yields</b
+              ><span>
+                <span class="m">makeInteractivePrompt</span> is an async generator the SDK pulls
+                from. It wraps your text in an <span class="m">SDKUserMessage</span>, calls
+                <span class="m">turnGate.close()</span>, starts the spinner, and yields.</span
+              >
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>The model reads a prompt it has seen before</b
+              ><span>
+                The system prompt — protocol, tool catalog, playbooks, references, report template —
+                was built once at startup and is served from cache. A non-zero
+                <span class="m">cacheReadTokens</span> in the session summary is the proof.</span
+              >
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>Tool calls fork on the allow-list</b
+              ><span>
+                A name in <span class="m">ALLOWED_TOOL_NAMES</span> runs immediately. Anything else
+                falls through to <span class="m">canUseTool</span>, which renders the approval
+                panel. The registry is default-deny, so a tool nobody thought to register prompts
+                rather than runs.</span
+              >
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>The approval loop only exits on y or n</b
+              ><span>
+                <span class="m">explain</span> prints the model's stated reasoning and re-prompts;
+                unrecognised input re-prompts silently. An aborted signal denies rather than hangs,
+                and the denial message tells the model to skip and continue instead of
+                retrying.</span
+              >
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>Results are shrunk before the model sees them</b
+              ><span>
+                Kinetica's double-encoded <span class="m">data_str</span> is parsed, reshaped into
+                markdown, then cut to head 150 + tail 50 lines. Without that step a single shard map
+                — 16,384 entries — would swallow the context window.</span
+              >
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>Text streams out while tools still run</b
+              ><span>
+                <span class="m">includePartialMessages</span> pushes
+                <span class="m">text_delta</span> events to a line-buffering aligner that holds back
+                markdown table blocks until it can align the columns, and passes prose through
+                immediately.</span
+              >
+            </div>
+          </li>
+          <li>
+            <div>
+              <b>Only end_turn hands the terminal back</b
+              ><span>
+                On <span class="m">tool_use</span> the spinner restarts and the loop continues. On
+                <span class="m">end_turn</span> the gate opens and the generator wakes up to print
+                <span class="m">"You:"</span>.</span
+              >
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <hr class="rule" />
+
+      <section id="protocol">
+        <div class="sec-head">
+          <span class="eyebrow">What the model is told to do</span>
+          <h2>Five rounds, two of them optional</h2>
+        </div>
+        <div class="spine">
+          <p>
+            The loop in Figure 3 is mechanism; the protocol below is policy, written into the system
+            prompt. Rounds 1–3 are diagnosis and always run. Rounds 4 and 5 only happen when the
+            evidence supports a specific remediation, and Round 4 is the point where the approval
+            panel from Figure 3 fires.
+          </p>
+          <p>
+            The rule that matters most is the one drawn dashed:
+            <strong>after Round 3 the report is mandatory</strong>, gaps and all. An investigation
+            that ends without a report is a failure mode, so the prompt closes that door explicitly.
+          </p>
+        </div>
+
+        <figure>
+          <div class="fig-scroll">
+            <svg
+              viewBox="0 0 1080 300"
+              role="img"
+              aria-label="Five investigation rounds run left to right into a report. Round 4 pauses for an approval panel and the report pauses for save consent. A dashed path skips from Round 3 straight to the report, and budget or context pressure can force a partial report at any round."
+            >
+              <defs>
+                <marker
+                  id="a4"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"></path>
+                </marker>
+                <marker
+                  id="a4h"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"></path>
+                </marker>
+                <marker
+                  id="a4d"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--ink-3)"></path>
+                </marker>
+              </defs>
+
+              <rect class="box" x="20" y="110" width="155" height="68" rx="6"></rect>
+              <text class="t-title" x="98" y="136" text-anchor="middle">Round 1</text>
+              <text class="t-sub" x="98" y="153" text-anchor="middle">initial sweep</text>
+              <text class="t-mono t-dim" x="98" y="169" text-anchor="middle">4 tools at once</text>
+
+              <rect class="box" x="193" y="110" width="155" height="68" rx="6"></rect>
+              <text class="t-title" x="271" y="136" text-anchor="middle">Round 2</text>
+              <text class="t-sub" x="271" y="153" text-anchor="middle">drill-down</text>
+              <text class="t-mono t-dim" x="271" y="169" text-anchor="middle">per hypothesis</text>
+
+              <rect class="box" x="366" y="110" width="155" height="68" rx="6"></rect>
+              <text class="t-title" x="444" y="136" text-anchor="middle">Round 3</text>
+              <text class="t-sub" x="444" y="153" text-anchor="middle">confirmation</text>
+              <text class="t-mono t-dim" x="444" y="169" text-anchor="middle">pin the cause</text>
+
+              <rect class="box" x="539" y="110" width="155" height="68" rx="6"></rect>
+              <text class="t-title" x="617" y="136" text-anchor="middle">Round 4</text>
+              <text class="t-sub" x="617" y="153" text-anchor="middle">propose a fix</text>
+              <text class="t-mono t-dim" x="617" y="169" text-anchor="middle">optional</text>
+
+              <rect class="box" x="712" y="110" width="155" height="68" rx="6"></rect>
+              <text class="t-title" x="790" y="136" text-anchor="middle">Round 5</text>
+              <text class="t-sub" x="790" y="153" text-anchor="middle">verify the change</text>
+              <text class="t-mono t-dim" x="790" y="169" text-anchor="middle">before / after</text>
+
+              <rect class="box-machine" x="885" y="110" width="155" height="68" rx="6"></rect>
+              <text class="t-title" x="963" y="136" text-anchor="middle">Report</text>
+              <text class="t-sub" x="963" y="153" text-anchor="middle">fixed template</text>
+              <text class="t-mono t-dim" x="963" y="169" text-anchor="middle">section order</text>
+
+              <path class="edge" d="M 175 144 H 193" marker-end="url(#a4)"></path>
+              <path class="edge" d="M 348 144 H 366" marker-end="url(#a4)"></path>
+              <path class="edge" d="M 521 144 H 539" marker-end="url(#a4)"></path>
+              <path class="edge" d="M 694 144 H 712" marker-end="url(#a4)"></path>
+              <path class="edge" d="M 867 144 H 885" marker-end="url(#a4)"></path>
+
+              <path class="edge-dash" d="M 444 110 V 76 H 963 V 110" marker-end="url(#a4d)"></path>
+              <text class="t-edge" x="700" y="68" text-anchor="middle">
+                no remediation to propose — report anyway, gaps and all
+              </text>
+
+              <path
+                class="edge-hot"
+                d="M 617 178 V 210"
+                marker-end="url(#a4h)"
+                marker-start="url(#a4h)"
+              ></path>
+              <rect class="box-hot" x="497" y="214" width="240" height="52" rx="6"></rect>
+              <text class="t-title" x="617" y="236" text-anchor="middle">approval panel</text>
+              <text class="t-mono t-hot" x="617" y="254" text-anchor="middle">
+                every mutation, y / n / explain
+              </text>
+
+              <path class="edge-hot" d="M 963 178 V 210" marker-end="url(#a4h)"></path>
+              <rect class="box-hot" x="873" y="214" width="180" height="52" rx="6"></rect>
+              <text class="t-title" x="963" y="236" text-anchor="middle">save consent</text>
+              <text class="t-mono t-hot" x="963" y="254" text-anchor="middle">
+                asked in chat first
+              </text>
+
+              <rect
+                class="box-ghost"
+                x="20"
+                y="214"
+                width="440"
+                height="52"
+                rx="6"
+                stroke="var(--accent)"
+              ></rect>
+              <text class="t-mono t-hot" x="240" y="236" text-anchor="middle">
+                INTERRUPT — budget guard at 80%, or context pressure
+              </text>
+              <text class="t-mono t-dim" x="240" y="254" text-anchor="middle">
+                save_report(partial: true) immediately, without asking
+              </text>
+            </svg>
+          </div>
+          <figcaption>
+            <b>Figure 4 — the investigation protocol.</b> Saving is normally a conversational
+            question the agent must ask and then stop for. The dashed interrupt is the single
+            exception: under budget or context pressure a partial report is written unprompted,
+            because preserving findings beats the etiquette.
+          </figcaption>
+        </figure>
+      </section>
+
+      <hr class="rule" />
+
+      <section id="rails">
+        <div class="sec-head">
+          <span class="eyebrow">Guardrails</span>
+          <h2>What stops it going wrong</h2>
+        </div>
+        <div class="spine">
+          <p>
+            Each rail below is enforced in code rather than requested in the prompt — the
+            distinction matters, because a prompt is advice and a deny list is not.
+          </p>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Rail</th>
+                <th>How it is enforced</th>
+                <th>Where</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>No shell, no file writes</td>
+                <td>
+                  <span class="m">disallowedTools</span> lists Bash, Edit, Write, MultiEdit — deny
+                  overrides every allow, including bypass modes
+                </td>
+                <td>agent/run-agent.ts</td>
+              </tr>
+              <tr>
+                <td>Mutations need a person</td>
+                <td>
+                  Mutation tools are deliberately kept out of <span class="m">allowedTools</span> so
+                  they fall through to the approval gate. No wildcard is ever used in that list
+                </td>
+                <td>approval/gate.ts</td>
+              </tr>
+              <tr>
+                <td>Unknown tools prompt</td>
+                <td>
+                  The read-only registry is default-deny: only names explicitly registered bypass
+                  the gate, so a newly added tool prompts until someone registers it
+                </td>
+                <td>approval/registry.ts</td>
+              </tr>
+              <tr>
+                <td>Context blowup</td>
+                <td>
+                  Every tool result passes <span class="m">formatOutput → truncateOutput</span>; the
+                  16,384-entry shard array is summarised per rank before it is ever formatted
+                </td>
+                <td>output/truncate.ts</td>
+              </tr>
+              <tr>
+                <td>Runaway spend</td>
+                <td>
+                  <span class="m">maxBudgetUsd</span> is passed to the SDK only under API-key
+                  billing; a token-usage estimate warns once at 80% so the cutoff is never a
+                  surprise
+                </td>
+                <td>agent/session-budget.ts</td>
+              </tr>
+              <tr>
+                <td>Runaway turns</td>
+                <td>
+                  100 turns with a live session, 40 bundle-only — the guard for subscription users,
+                  who have no meaningful dollar cap
+                </td>
+                <td>agent/run-agent.ts</td>
+              </tr>
+              <tr>
+                <td>Prompt bloat</td>
+                <td>
+                  <span class="m">checkPromptBudget()</span> warns past 20k tokens; the corpus
+                  currently sits near 17.2k
+                </td>
+                <td>agent/prompt-budget.ts</td>
+              </tr>
+              <tr>
+                <td>Credential leakage</td>
+                <td>
+                  Credentials live in a closure; the password is never written to
+                  <span class="m">.env</span>; reports are scrubbed and mutation audit lines redact
+                  config payloads
+                </td>
+                <td>report/scrub.ts · tools/audit-redact.ts</td>
+              </tr>
+              <tr>
+                <td>Bundle path escape</td>
+                <td>
+                  The index drops symlinked leaves and any entry whose realpath leaves the bundle
+                  root — and every reader draws from that one index
+                </td>
+                <td>bundle/bundle-index.ts</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <span class="eyebrow">The composability point</span>
+          <p>
+            A live connection and a support bundle are capabilities, not modes. A session can hold
+            either or both, and the tool set is their union — which is what lets the agent read what
+            a rank logged at 03:14 last Tuesday and then check whether that condition still holds
+            right now. Bundle tools are always registered against a lazy holder, so
+            <span class="m">kinetica_load_bundle</span> can attach one mid-conversation even though
+            the SDK fixed the tool set when <span class="m">query()</span> was created.
+          </p>
+        </div>
+      </section>
+
+      <footer>
+        <span>admin-agent v0.2.5</span>
+        <span>Claude Agent SDK</span>
+        <span>16 diagnostic · 5 mutation · 6 bundle · save_report</span>
+      </footer>
+    </div>
+  </body>
+</html>
