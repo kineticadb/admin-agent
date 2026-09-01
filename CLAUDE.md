@@ -133,22 +133,22 @@ Each tool takes `KineticaSession` and returns `ToolResult<T>` — a discriminate
 
 **REST tools** (`tools/rest/`) — 14 tools calling Kinetica REST endpoints via `session.makeRequest()`:
 
-| Tool                 | Endpoint                                   | Notes                                                                                           |
-| -------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `health`             | `/show/system/status`                      | Full status_map with all health indicators                                                      |
-| `metrics`            | `/show/resource/statistics`                | CPU/memory/GPU per rank, optional node_id filter                                                |
-| `cluster`            | `/show/system/status`                      | Rebalance ops, shard map, alerts, jobs                                                          |
-| `node`               | `/show/resource/statistics`                | Per-node resource details                                                                       |
-| `logs`               | `/admin/show/logs`                         | Not available on all versions — use SQL fallback                                                |
-| `show-configuration` | `/admin/show/configuration` (HM port 9300) | Full gpudb.conf via host manager                                                                |
-| `system-properties`  | `/show/system/properties`                  | Runtime config with category/key filtering                                                      |
-| `system-timing`      | `/show/system/timing`                      | Per-endpoint response times                                                                     |
-| `resource-groups`    | `/show/resourcegroups`                     | Resource group config + tier usage per rank                                                     |
-| `verify-db`          | `/admin/verifydb`                          | Always concurrent_safe mode, never exposes destructive options                                  |
-| `security`           | `/show/security`                           | User/role/permission maps                                                                       |
-| `show-table`         | `/show/table` + SQL                        | Table metadata, sizes, properties, column types, indexes (from `ki_catalog.ki_indexes` via SQL) |
-| `resource-objects`   | `/show/resource/objects`                   | Tier placement data (RAM/DISK/PERSIST)                                                          |
-| `host-manager`       | port 9300 `/`                              | Host manager cluster status (no auth required)                                                  |
+| Tool                 | Endpoint                                   | Notes                                                                                            |
+| -------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `health`             | `/show/system/status`                      | Full status_map with all health indicators                                                       |
+| `metrics`            | `/show/resource/statistics`                | CPU/memory/GPU per rank, optional node_id filter                                                 |
+| `cluster`            | `/show/system/status`                      | Rebalance ops, shard map, alerts, jobs                                                           |
+| `node`               | `/show/resource/statistics`                | Per-node resource details                                                                        |
+| `logs`               | `/admin/show/logs`                         | Not available on all versions — use SQL fallback                                                 |
+| `show-configuration` | `/admin/show/configuration` (HM port 9300) | Full gpudb.conf via host manager                                                                 |
+| `system-properties`  | `/show/system/properties`                  | 306 config properties (reports the file) with category/key filtering; names are `conf.`-prefixed |
+| `system-timing`      | `/show/system/timing`                      | Per-endpoint response times                                                                      |
+| `resource-groups`    | `/show/resourcegroups`                     | Resource group config + tier usage per rank                                                      |
+| `verify-db`          | `/admin/verifydb`                          | Always concurrent_safe mode, never exposes destructive options                                   |
+| `security`           | `/show/security`                           | User/role/permission maps                                                                        |
+| `show-table`         | `/show/table` + SQL                        | Table metadata, sizes, properties, column types, indexes (from `ki_catalog.ki_indexes` via SQL)  |
+| `resource-objects`   | `/show/resource/objects`                   | Tier placement data (RAM/DISK/PERSIST)                                                           |
+| `host-manager`       | port 9300 `/`                              | Host manager cluster status (no auth required)                                                   |
 
 **SQL tools** (`tools/sql/`) — 2 tools + 1 error enricher:
 
@@ -158,12 +158,12 @@ Each tool takes `KineticaSession` and returns `ToolResult<T>` — a discriminate
 
 **Mutation tools** (`tools/mutation/`) — 4 tools requiring user approval before execution:
 
-| Tool                      | Endpoint                                    | Notes                                                                      |
-| ------------------------- | ------------------------------------------- | -------------------------------------------------------------------------- |
-| `alter-system-properties` | `/alter/system/properties`                  | Runtime config changes with before/after verification                      |
-| `execute-mutation-sql`    | `/execute/sql`                              | DDL/DML (CREATE INDEX, ALTER TABLE, etc.); rejects DROP/TRUNCATE/DELETE    |
-| `admin-rebalance`         | `/admin/rebalance`                          | Shard rebalancing with aggressiveness cap; before/after shard distribution |
-| `alter-configuration`     | `/admin/alter/configuration` (HM port 9300) | Replace full gpudb.conf with before/after verification                     |
+| Tool                      | Endpoint                                    | Notes                                                                                         |
+| ------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `alter-system-properties` | `/alter/system/properties`                  | Edits `gpudb.conf` in place (persists; restart may be needed); returns a `verification` state |
+| `execute-mutation-sql`    | `/execute/sql`                              | DDL/DML (CREATE INDEX, ALTER TABLE, etc.); rejects DROP/TRUNCATE/DELETE                       |
+| `admin-rebalance`         | `/admin/rebalance`                          | Shard rebalancing with aggressiveness cap; before/after shard distribution                    |
+| `alter-configuration`     | `/admin/alter/configuration` (HM port 9300) | Replace full gpudb.conf with before/after verification                                        |
 
 Mutation tools are annotated `{ destructive: true, readOnly: false }` — not in the diagnostic allow-list, so they trigger the `canUseTool` approval gate. Each mutation logs an audit line to stderr (EXECUTED/FAILED + input summary) via `logMutationAudit()`.
 
@@ -255,7 +255,7 @@ The entire knowledge corpus (all playbooks + all references + SQL examples + too
 - `checkPromptBudget(prompt, opts?)` — returns an immutable `BudgetReport` (`tokens`, `chars`, `threshold`, `overBudget`); comparison is strictly-greater, so a prompt exactly at the threshold is not flagged
 - `DEFAULT_PROMPT_BUDGET_TOKENS = 20_000` — warn threshold (a tripwire, not a hard limit; raised from 15_000 on 2026-06-03 since the cached system prompt makes corpus token cost near-zero)
 
-Wired into `runAgent()` immediately after `buildSystemPrompt()`: a `DEBUG`-gated size line plus an **unconditional** over-budget warning to stderr cueing keyword-based playbook selection. Measured baseline (2026-08-10): the assembled prompt is **~17,201 tokens** with 6 playbooks + 11 references — ~14% under the 20,000 threshold (was ~15,517 with 10 references before `service-management` was added). Note the system prompt is **cached** by the Agent SDK (built once at startup, re-read on every turn), so corpus token cost is near-zero in practice — `runAgent()` emits a `DEBUG`-gated cache-token line in the session summary (`cacheReadTokens > 0` confirms reuse).
+Wired into `runAgent()` immediately after `buildSystemPrompt()`: a `DEBUG`-gated size line plus an **unconditional** over-budget warning to stderr cueing keyword-based playbook selection. Measured baseline (2026-08-31): the assembled prompt is **~19,137 tokens** with 6 playbooks + 11 references + 1 bundle reference — ~4% under the 20,000 threshold (was ~17,201 on 2026-08-10, before the measured config-mechanism section landed in `gpudb-conf.md`; ~15,517 with 10 references before `service-management` was added). Note the system prompt is **cached** by the Agent SDK (built once at startup, re-read on every turn), so corpus token cost is near-zero in practice — `runAgent()` emits a `DEBUG`-gated cache-token line in the session summary (`cacheReadTokens > 0` confirms reuse).
 
 ### Session Budget Guard (`agent/session-budget.ts`)
 
@@ -297,7 +297,8 @@ Wired into `runAgent()`: the budget is resolved in `cli/index.ts` and threaded t
 - `ki_catalog.ki_tables` and `ki_catalog.ki_version` do NOT exist in Kinetica 7.2.x — use `ki_objects` and `/show/system/status` respectively
 - `/admin/show/logs` is not implemented in 7.2.x — returns 404 "Unknown URI"
 - `/admin/show/configuration` and `/admin/alter/configuration` are host manager endpoints (port 9300) — use `makeRequestToPort()` with `data_str` double-encoding; response contains `config_string` (full gpudb.conf)
-- `sm_omp_threads` and `kernel_omp_threads` properties do NOT exist in 7.2.x — use `worker_endpoint_threads`, `subtask_concurrency_limit`, `tcs_per_tom` instead. `execution_mode` IS a valid runtime-alterable property (values: `host` | `device` | `default` | `<rows>`) — see `knowledge/references/gpudb-conf.md`
+- `/alter/system/properties` is **not** an in-memory runtime change — it **edits `/opt/gpudb/core/etc/gpudb.conf` in place** (line-level, verified by md5 + mtime + the changed line) and mirrors to `persist/gpudb/rank-0/gpudb.conf.bak` (a mirror holding the NEW value, not a rollback point). `/show/system/properties` then reports the file, so `verification: confirmed` means **persisted**, not applied. The running process does not re-read: `tps_per_tom` 4→8 changed zero threads on either rank (98/98, 90/90 under load), and `enable_audit=TRUE` with content flags on produced no audit output. Effect comes on restart. `kinetica_alter_configuration` (host manager :9300) writes the SAME file — never use both routes in one session. `enable_procs` and `worker_endpoint_threads` are rejected by the endpoint (`is not a valid parameter`); `sm_omp_threads`/`kernel_omp_threads` do not exist. `/show` also dot-sections names `/alter` flattens (`ai_api_url` ↔ `conf.ai.api.url`) — 12 of the 43 are reachable only via that normalisation, and 7 of the 43 are absent from `/show/system/properties`, so they can only ever return `not_reported` (4 of those are still in `gpudb.conf` — `/show` reports 306 keys, the file has 330, and neither is a superset — so `kinetica_show_configuration` is the authoritative read-back for them) — see `knowledge/references/gpudb-conf.md`
+- `/show/system/properties` returns property names **`conf.`-prefixed** while `/alter/system/properties` takes them **bare** (296 of 306 keys carry the prefix; the exceptions are `version.*` and `system.font_families`). A read-back keyed on the bare name therefore finds nothing and looks like a no-op whether or not the write landed. `alterSystemProperties` had exactly this bug; use `lookupProperty()` (exact match, then `conf.`-prefixed, never a substring match) for any read-back. Be sceptical of any "the property didn't change" report that does not say which spelling it read.
 - `/show/table` with empty `table_name` returns schema-level collections (not individual tables) with empty `sizes` array — use `ki_catalog.ki_objects` for table listing
 - `/show/table` requires `<schema>.<table>` format — three-part names (e.g., `ki_home.ki_catalog.ki_objects`) return 400 error
 - `/admin/rebalance` returns "Database must be offline" on single-worker-rank clusters — rebalance requires 2+ worker ranks

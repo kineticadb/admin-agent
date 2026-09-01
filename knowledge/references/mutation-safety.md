@@ -67,10 +67,37 @@ BEFORE proposing any mutation:
 
 ## For `kinetica_alter_system_properties`
 
-- The tool enforces an allow-list of 43 documented properties —
-  unsupported names are rejected before the API call.
-- Prefer changing `subtask_concurrency_limit`, `tcs_per_tom`, or
-  `tps_per_tom` for concurrency tuning.
+- **This tool edits `gpudb.conf`.** `/alter/system/properties` writes the value into
+  `/opt/gpudb/core/etc/gpudb.conf` in place (and mirrors it to
+  `persist/gpudb/rank-0/gpudb.conf.bak`). It is a **persistent config
+  edit**, not an in-memory runtime tweak — say so when asking the operator
+  to approve one, and note the change survives restarts.
+- **`kinetica_alter_configuration` writes the SAME file** via the host
+  manager. Do not use both routes in one investigation — the second can
+  silently discard the first.
+- Allow-list: 43 property names from the 7.2 REST docs; unsupported names
+  are rejected before the API call. All 34 testable names were measured
+  accepted and none rejected (43 minus 2 blocked and 7 absent from `/show`).
+- **`verification` means persisted, not applied.** `confirmed` = read back
+  and matches, so the value is in the file. `failed` = did not persist.
+  `not_reported` = `/show/system/properties` does not expose this property
+  (**7 of the 43**). For 4 of those — `execution_mode`, `audit_response`,
+  `egress_single_file_max_size`, `system_metadata_retention_period` — the
+  value IS in `gpudb.conf`, so verify with `kinetica_show_configuration`
+  instead of giving up. The other 3
+  (`enable_one_step_compound_equi_join`, `log_debug_job_info`,
+  `kifs_directory_data_limit`) are in neither surface.
+  `unavailable` = `/show` unreadable. Report a change as **persisted** only
+  on `confirmed`, and never report a behaviour change on it.
+- **These four store but do NOT take effect until a restart** —
+  `tps_per_tom`, `tcs_per_tom`, `subtask_concurrency_limit`, `enable_audit`.
+  Measured: `tps_per_tom` 4→8 changed zero threads on either rank, and
+  `enable_audit=TRUE` (with content flags on) produced no audit output. The
+  tool attaches a `restart_note`. Tell the operator the value is written and
+  a restart is required to realise it — the agent cannot restart services.
+- **Rejected outright (measured):** `enable_procs`,
+  `worker_endpoint_threads` — `/alter/system/properties` answers "is not a
+  valid parameter".
 - NOTE: `sm_omp_threads` and `kernel_omp_threads` do NOT exist in
   Kinetica 7.2.x (not in the allow-list).
 - Avoid `chunk_size` changes without DBA review — affects all query

@@ -52,7 +52,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
 - Expert knowledge via pluggable playbooks (no code required to add new ones)
 - Schema-aware SQL — discovers actual column names at startup, never guesses
 - HTTPS-first URL resolution with explicit consent required before any HTTP fallback
-- Credential scrubbing on all saved reports
+- Credential masking at every boundary — config secrets masked before leaving the tool (live and bundle), inline credentials masked in logs and process args, saved reports scrubbed
 - Degraded mode — useful diagnostics even when the DB engine is down
 
 ## Quick Start
@@ -293,11 +293,11 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 ### Configuration & Logs
 
-| Tool                             | Description                                                                |
-| -------------------------------- | -------------------------------------------------------------------------- |
-| `kinetica_get_system_properties` | 260+ runtime config properties with optional category/key filtering        |
-| `kinetica_show_configuration`    | Full `gpudb.conf` from host manager (port 9300)                            |
-| `kinetica_get_logs`              | Application logs by source/severity/time range (_7.2.x: use SQL fallback_) |
+| Tool                             | Description                                                                                                                                 |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_get_system_properties` | 306 config properties with optional category/key filtering (names are `conf.`-prefixed and dot-sectioned — filter by `conf.sql`, not `sql`) |
+| `kinetica_show_configuration`    | Full `gpudb.conf` from host manager (port 9300)                                                                                             |
+| `kinetica_get_logs`              | Application logs by source/severity/time range (_7.2.x: use SQL fallback_)                                                                  |
 
 ### Data & Security
 
@@ -315,12 +315,12 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 ### Administrative Mutations (require approval)
 
-| Tool                               | Description                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `kinetica_alter_system_properties` | Runtime config changes with before/after verification                    |
-| `kinetica_execute_mutation_sql`    | DDL/DML (CREATE INDEX, ALTER TABLE, etc.) — DROP/TRUNCATE/DELETE blocked |
-| `kinetica_admin_rebalance`         | Shard rebalancing with aggressiveness cap and before/after capture       |
-| `kinetica_alter_configuration`     | Replace `gpudb.conf` with before/after verification                      |
+| Tool                               | Description                                                                                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_alter_system_properties` | Config changes via `/alter/system/properties` — **edits `gpudb.conf` in place**, so it persists and may need a restart to take effect; returns a `verification` state |
+| `kinetica_execute_mutation_sql`    | DDL/DML (CREATE INDEX, ALTER TABLE, etc.) — DROP/TRUNCATE/DELETE blocked                                                                                              |
+| `kinetica_admin_rebalance`         | Shard rebalancing with aggressiveness cap and before/after capture                                                                                                    |
+| `kinetica_alter_configuration`     | Replace `gpudb.conf` via the host manager — the **same file** the tool above writes, so don't use both in one investigation                                           |
 
 ### Batch Column Alter (self-approving)
 
@@ -332,14 +332,14 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 Available against an extracted `gpudb_sysinfo` support bundle (see [Offline Bundle Mode](#offline-bundle-mode)). All read-only; the search/timeline tools stream and bound their output so a large rank log (tens of MB, hundreds of thousands of lines) never blows up the context.
 
-| Tool                           | Description                                                                                                                                                                                                                                                                                 |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kinetica_load_bundle`         | Attach an extracted bundle directory; without a path it opens a directory picker (a model-supplied path needs operator confirmation)                                                                                                                                                        |
-| `kinetica_bundle_list_files`   | Inventory: detected version, ranks + services present, file counts/sizes by kind, plus a layout-match verdict + per-file confidence for off-shape bundles — call this first                                                                                                                 |
-| `kinetica_bundle_log_timeline` | Per-time-bucket severity counts across ranks (the incident shape) — call before searching                                                                                                                                                                                                   |
-| `kinetica_bundle_search_logs`  | Bounded log search by regex, min-severity, time window, and rank / host-manager / component (reads both rolling and Loki-export logs); `include_multiline` stitches a multi-line record — e.g. a full `Executing SQL:` query whose embedded newlines span many lines — back onto each match |
-| `kinetica_bundle_read_config`  | Read the bundle's real on-disk `gpudb.conf`, with optional section/key filter                                                                                                                                                                                                               |
-| `kinetica_bundle_read_sysinfo` | OS/process/version diagnostic files (memory, CPU, disk, GPU, network, process args)                                                                                                                                                                                                         |
+| Tool                           | Description                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_load_bundle`         | Attach an extracted bundle directory; without a path it opens a directory picker (a model-supplied path needs operator confirmation)                                                                                                                                                                                                     |
+| `kinetica_bundle_list_files`   | Inventory: detected version, ranks + services present, file counts/sizes by kind, plus a layout-match verdict + per-file confidence for off-shape bundles — call this first                                                                                                                                                              |
+| `kinetica_bundle_log_timeline` | Per-time-bucket severity counts across ranks (the incident shape) — call before searching                                                                                                                                                                                                                                                |
+| `kinetica_bundle_search_logs`  | Bounded log search by regex, min-severity, time window, and rank / host-manager / component (reads both rolling and Loki-export logs); `include_multiline` stitches a multi-line record — e.g. a full `Executing SQL:` query whose embedded newlines span many lines — back onto each match; inline credentials in logged SQL are masked |
+| `kinetica_bundle_read_config`  | Read the bundle's real on-disk `gpudb.conf`, with optional section/key filter — credential values are masked, key names kept                                                                                                                                                                                                             |
+| `kinetica_bundle_read_sysinfo` | OS/process/version diagnostic files (memory, CPU, disk, GPU, network, process args) — credentials in process args and env dumps are masked                                                                                                                                                                                               |
 
 ### Reporting
 
@@ -358,7 +358,9 @@ The agent is designed with defense-in-depth for database administration:
 - **Mutation approval gate** — the 4 administrative mutation tools each trigger an interactive y/n/explain prompt before execution; DROP/TRUNCATE/DELETE/UPDATE SQL is always blocked (with CTE-bypass protection)
 - **Two-step approval for batch column alter** — `kinetica_alter_table_columns` requires the operator to select columns via a checklist, then confirm the exact SQL preview
 - **Audit trail** — every mutation logs a redacted audit line to stderr (EXECUTED/FAILED + fingerprinted input summary) and appears in the report's "Mutations Applied" table with before/after state
-- **Report scrubbing** — saved reports are scrubbed of URLs, auth headers, Basic/Bearer credentials, cookies, and passwords before writing to disk
+- **Config secrets masked at the source** — `gpudb.conf` carries license keys, LDAP binds, TLS material and cloud-storage credentials. Values of credential-bearing keys are masked before the config leaves the tool, on both the live path (`kinetica_show_configuration`) and the bundle path (`kinetica_bundle_read_config`), so they never enter the agent's context. Key names and non-secret values are preserved, so drift detection and policy checks (e.g. `min_password_length`) still work
+- **Inline credential masking in bundle artifacts** — process args, environment dumps and credentials inside logged SQL (`IDENTIFIED BY`, `SET PASSWORD`) are masked in `kinetica_bundle_read_sysinfo` and `kinetica_bundle_search_logs`. Deliberately narrow: log lines and host diagnostics are the evidence these tools exist to surface, so a line that merely mentions a password is left intact
+- **Report scrubbing** — saved reports are scrubbed of URLs, auth headers, Basic/Bearer credentials, cookies, passwords, API keys and cloud-storage credentials before writing to disk, in prose and table form as well as bare `key = value`
 - **Confirmed report writes** — the agent asks the operator (in conversation) whether to save before composing the report, and writes only after a yes; the one exception is an automatic partial-report checkpoint when the budget guard is about to cut the session off, so findings are never lost
 - **Budget guard** — a per-session dollar cap (default $5.00, configurable via `--max-budget` or `ADMIN_AGENT_MAX_BUDGET`) prevents runaway spend on API-key billing; OAuth subscription sessions are bounded by the turn limit instead
 
