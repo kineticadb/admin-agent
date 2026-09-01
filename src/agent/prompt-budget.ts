@@ -29,14 +29,21 @@ const CHARS_PER_TOKEN = 4;
  * Default threshold (in estimated tokens) above which the assembled system prompt is
  * considered expensive enough to warn about. Chosen as a tripwire, not a hard limit.
  *
- * Raised 15_000 → 20_000 (2026-06-03). The measured baseline is ~13,422 tokens, and the
- * system prompt is *cached* by the Agent SDK (written once at startup, re-read on every
- * turn — see the cache-token telemetry in run-agent.ts), so the marginal cost of the
- * corpus is near-zero. The earlier 15_000 left only ~10% headroom and fired as a false
- * alarm well before any real cost concern. 20_000 keeps the tripwire meaningful (it still
- * catches roughly a 50% corpus growth) without crying wolf.
+ * The system prompt is *cached* by the Agent SDK (built once at startup, re-read on every
+ * turn — see the cache-token telemetry in run-agent.ts), so the marginal cost of the corpus
+ * is near-zero. This threshold has therefore never been about spend; it bounds how much
+ * always-on material the agent has to hold at once. Each raise is a deliberate
+ * re-baseline, recorded here so the number is never silently moved to mute a warning:
+ *
+ *   15_000 → 20_000 (2026-06-03) — baseline ~13,422 tokens. 15_000 left ~10% headroom and
+ *     fired as a false alarm well before any real cost concern.
+ *   20_000 → 30_000 (2026-09-01) — baseline ~19,325 tokens (6 playbooks, 11 references,
+ *     1 bundle reference). At ~3% headroom the tripwire was no longer a signal: every
+ *     further corpus addition would trip it, including ones we intend to make. 30_000
+ *     makes room for the planned observability knowledge imports while still catching
+ *     roughly a 50% corpus growth.
  */
-export const DEFAULT_PROMPT_BUDGET_TOKENS = 20_000;
+export const DEFAULT_PROMPT_BUDGET_TOKENS = 30_000;
 
 /** Result of measuring a prompt against a budget threshold. Immutable. */
 export type BudgetReport = {
