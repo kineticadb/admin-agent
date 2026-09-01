@@ -13,36 +13,138 @@
  */
 
 /**
- * Matches a sensitive INI `key = value` / `key: value` line and captures the
- * `key + separator` portion (group 1) so the value can be replaced while the key
- * name is preserved (e.g. `license_key = [REDACTED]`).
- *
- * The sensitive keyword may appear anywhere inside the key token, so dotted /
- * prefixed keys such as `security.ldap_bind_password` are covered. Matching is
- * intentionally broad over the key (any key containing one of these keywords is
- * treated as sensitive) — erring toward redaction for config blobs like
- * gpudb.conf, which carry license keys, LDAP bind passwords, and TLS keystore /
- * truststore passwords. The value is consumed to end-of-line so the entire
- * secret is removed, not just its first token.
- *
- * Keep the keyword set in sync with the sensitive-key handling in
- * `src/tools/audit-redact.ts` — both guard the same gpudb.conf secrets (the two
- * use different strategies: masked-line here vs. whole-blob fingerprint there).
+ * Credential words. Redacted wherever they appear in a key name, because a
+ * position-only rule leaks: `private_key_pem` and `bind_password_value` are
+ * secrets whose credential word is not the final token.
  */
-export const CONFIG_SECRET_PATTERN =
-  /([^\r\n=:]*(?:password|passwd|passphrase|license[_-]?key|private[_-]?key|secret)[^\r\n=:]*[:=][ \t]*)[^\r\n]+/gi;
+const SECRET_KEY_WORDS =
+  "password|passwd|passphrase|secret|token|credential|apikey|" +
+  String.raw`(?:license|private|public|api|access|signing|encryption` +
+  String.raw`|account|handshake|customer|master|session)[_.-]?key`;
 
 /**
- * Masks the values of sensitive INI keys while preserving the key name.
+ * Final tokens that mark a key as a policy setting or a filesystem path rather
+ * than a credential, even when a credential word appears earlier in the name.
  *
- * Pure function — returns a new string without mutating the input. Unlike
- * {@link scrubCredentials}, this only touches sensitive `key = value` lines and
- * leaves all other configuration intact, so callers (e.g. the show_configuration
- * tool) can return a still-useful config blob to the agent for drift detection
- * with every secret value masked.
+ * This is the narrow exception that keeps `min_password_length` (a policy the
+ * agent must read to diagnose weak auth) and `ssl_key_file` (a path) visible.
+ * Unknown keys fall through to redaction, so the list fails safe.
+ */
+/**
+ * Leading tokens that mark a key as a boolean flag rather than a credential --
+ * `use_managed_credentials` is on/off, and hiding it costs cloud-tier diagnosis.
+ */
+const FLAG_LEADING_TOKENS = "use|enable|disable|allow|require|is|has";
+
+const NON_SECRET_FINAL_TOKENS =
+  "length|min|max|age|policy|expiry|history|complexity|enabled|" +
+  "file|path|dir|directory|ciphers|timeout|count|port|type|algorithm";
+
+/** A bare `key` suffix is a credential: `ai.api.key`, `handshake_key`. */
+const SECRET_FINAL_TOKENS = "key|keys|token|password|passwd|passphrase|credential|credentials";
+
+/**
+ * Matches a sensitive INI `key = value` line, capturing `key + separator` so the
+ * value alone is replaced and the key name survives for drift detection.
  *
- * @param content - INI-format config text (or any text containing such lines)
- * @returns A new string with sensitive values replaced by "[REDACTED]"
+ * A key is sensitive when it contains a credential word (SECRET_KEY_WORDS) or
+ * ends in one (SECRET_FINAL_TOKENS), UNLESS its final token marks it as policy or
+ * path (NON_SECRET_FINAL_TOKENS). Verified against a real gpudb.conf: an
+ * enumerated `license_key|private_key` set missed `ai.api.key`, while matching
+ * `password` by position alone missed `private_key_pem`.
+ *
+ * `src/tools/audit-redact.ts` guards the same secrets by fingerprinting the whole
+ * config_string instead; it needs no matching token list.
+ */
+const KEY_CHARS = "A-Za-z0-9_.-";
+
+/**
+ * Sensitive assignment matcher, built from the sets above.
+ *
+ * Deliberately NOT line-anchored: reports carry prose, tool error text and JSON,
+ * so a sensitive assignment can appear mid-line. The lookbehind finds the start
+ * of a key name instead, which also stops a match beginning mid-key (the
+ * "password_length" inside "min_password_length").
+ *
+ * Group 1 is `key + separator`, so the value alone is replaced.
+ */
+export const CONFIG_SECRET_PATTERN = new RegExp(
+  `(?<![${KEY_CHARS}])(` +
+    // leading space and any opening quote come first, so both exemptions below
+    // are evaluated at the real start of the key name
+    `[ \\t]*["']?` +
+    // exemption 1: final token marks the key as policy or path
+    `(?![${KEY_CHARS}]*[_.](?:${NON_SECRET_FINAL_TOKENS})["']?[ \\t]*[:=])` +
+    // exemption 2: the LAST dotted segment starts with a boolean-flag word --
+    // tier.cold0.default.use_managed_credentials is a flag, while
+    // tier.use_backup.default.s3_aws_secret_access_key is not
+    `(?!(?:[${KEY_CHARS}]*\\.)?(?:${FLAG_LEADING_TOKENS})_[^.]*["']?[ \\t]*[:=])` +
+    `(?:` +
+    // a credential word anywhere in the key name
+    `[${KEY_CHARS}]*(?:${SECRET_KEY_WORDS})[${KEY_CHARS}]*` +
+    // or the final token itself is a credential word
+    `|[${KEY_CHARS}]*[_.](?:${SECRET_FINAL_TOKENS})` +
+    `)["']?[ \\t]*[:=][ \\t]*` +
+    // non-whitespace value required: "[REDACTED]" on an empty field would imply
+    // a credential that is not configured
+    `)\\S[^\\r\\n]*`,
+  "gi",
+);
+
+/**
+ * Is this config key name's value a credential?
+ *
+ * The structured counterpart to {@link CONFIG_SECRET_PATTERN}, for callers that
+ * already have parsed `{key, value}` entries (the bundle's gpudb.conf reader)
+ * and should not have to render a line and re-parse it. Same three rules, same
+ * token sets, so the text and structured paths cannot drift apart.
+ *
+ * Pure, never throws.
+ */
+export function isSecretConfigKey(key: string): boolean {
+  const tokens = key.split(/[_.]/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return false;
+
+  const last = tokens[tokens.length - 1].toLowerCase();
+  if (new RegExp(`^(?:${NON_SECRET_FINAL_TOKENS})$`, "i").test(last)) return false;
+
+  // The flag word must begin the LAST dotted segment: tier.cold0.default.
+  // use_managed_credentials is a flag, but tier.use_backup.default.
+  // s3_aws_secret_access_key is a credential that merely sits under one.
+  const lastSegment = key.split(".").pop() ?? "";
+  const segmentHead = (lastSegment.split("_")[0] ?? "").toLowerCase();
+  if (new RegExp(`^(?:${FLAG_LEADING_TOKENS})$`, "i").test(segmentHead)) return false;
+
+  if (new RegExp(`(?:${SECRET_KEY_WORDS})`, "i").test(key)) return true;
+  return new RegExp(`^(?:${SECRET_FINAL_TOKENS})$`, "i").test(last);
+}
+
+/**
+ * Loose matcher for report PROSE, used by {@link scrubCredentials} only.
+ *
+ * The two callers want opposite things. {@link redactConfigSecrets} runs over
+ * gpudb.conf, where over-redaction hides diagnostics, so it demands the key and
+ * separator be adjacent. Report text has the inverse trade -- a miss writes a
+ * credential to disk, over-redaction costs nothing -- and the agent's idiom is
+ * `**key**:` or `` `key` = ``, not bare INI. One pattern cannot serve both; a
+ * single precise pattern silently stopped redacting every decorated form.
+ *
+ * Shape is deliberately the pre-rewrite pattern (arbitrary non-separator
+ * decoration around the credential word) so prose coverage is provably no worse
+ * than before, with the wider vocabulary added and `|` accepted as a separator
+ * so a credential in a report's before/after TABLE is covered too. Bare `key`/`token` suffixes are
+ * NOT included here: unbounded matching on them would redact any report line
+ * containing the word "key".
+ */
+const PROSE_SECRET_PATTERN = new RegExp(
+  `([^\\r\\n=:|]*(?:${SECRET_KEY_WORDS})[^\\r\\n=:|]*[:=|][ \\t]*)[^\\r\\n]+`,
+  "gi",
+);
+
+/**
+ * Masks sensitive INI values, preserving key names. Unlike {@link
+ * scrubCredentials} it leaves non-secret lines intact, so show_configuration can
+ * still return a usable config blob for drift detection.
  */
 export function redactConfigSecrets(content: string): string {
   return content.replace(CONFIG_SECRET_PATTERN, "$1[REDACTED]");
@@ -92,5 +194,6 @@ export function scrubCredentials(
   patterns: readonly RegExp[] = DEFAULT_SCRUB_PATTERNS,
 ): string {
   const configRedacted = redactConfigSecrets(content);
-  return patterns.reduce((text, pattern) => text.replace(pattern, "[REDACTED]"), configRedacted);
+  const proseRedacted = configRedacted.replace(PROSE_SECRET_PATTERN, "$1[REDACTED]");
+  return patterns.reduce((text, pattern) => text.replace(pattern, "[REDACTED]"), proseRedacted);
 }

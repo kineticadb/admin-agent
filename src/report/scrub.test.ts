@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  isSecretConfigKey,
   scrubCredentials,
   redactConfigSecrets,
   DEFAULT_SCRUB_PATTERNS,
@@ -328,5 +329,260 @@ The system experienced high GPU memory pressure.
       expect(CONFIG_SECRET_PATTERN).toBeInstanceOf(RegExp);
       expect(CONFIG_SECRET_PATTERN.flags).toContain("g");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Credential-bearing key names from a real gpudb.conf
+//
+// The old enumerated set (license_key|private_key|password|secret) was inverted
+// both ways: a bare `.key` suffix fell through (ai.api.key,
+// external_authentication_handshake_key -- live credentials), while `password`
+// matched anywhere and hid min_password_length. The rule is now position.
+// ---------------------------------------------------------------------------
+
+describe("redactConfigSecrets — real gpudb.conf key names", () => {
+  it.each([
+    "license_key = ABC-SECRET-123",
+    "ai.api.key = sk-live-abcdef123456",
+    "external_authentication_handshake_key = hs-secret-xyz",
+    "ldap.bind_password = hunter2",
+    "some_private_key = MIIEvQIBADAN",
+    "tls.keystore.passphrase = storepass",
+    "oauth.access_token = ya29.abc",
+    "svc.credentials = user:pass",
+  ])("redacts the value of %s", (line) => {
+    const out = redactConfigSecrets(line);
+    expect(out).toContain("[REDACTED]");
+    expect(out).not.toMatch(/SECRET-123|sk-live|hs-secret|hunter2|MIIEvQ|storepass|ya29|user:pass/);
+    // key name preserved for drift detection
+    expect(out.split(/[:=]/)[0]).toBe(line.split(/[:=]/)[0]);
+  });
+
+  it.each([
+    ["min_password_length = 0", "0"],
+    ["postgres_proxy.ssl_key_file = /etc/ssl/private/pg.key", "/etc/ssl/private/pg.key"],
+    ["https_cert_file = /etc/ssl/certs/kinetica.pem", "/etc/ssl/certs/kinetica.pem"],
+    ["postgres_proxy.ssl_ciphers = HIGH:!aNULL", "HIGH:!aNULL"],
+    ["enable_audit = FALSE", "FALSE"],
+  ])("leaves %s intact (non-secret, needed for diagnosis)", (line, value) => {
+    const out = redactConfigSecrets(line);
+    expect(out).toContain(value);
+    expect(out).not.toContain("[REDACTED]");
+  });
+
+  it.each(["ai.api.key =", "ai.api.key = ", "license_key ="])(
+    "leaves an EMPTY sensitive value unredacted: %j",
+    (line) => {
+      // "[REDACTED]" on an empty field would imply a credential is configured
+      // when none is -- a different diagnostic fact from "redacted".
+      expect(redactConfigSecrets(line)).not.toContain("[REDACTED]");
+    },
+  );
+
+  // A position-only rule lost these: a credential word mid-name followed by a
+  // qualifier. In a redaction pattern a false negative leaks; a false positive
+  // only costs a diagnostic. Both must hold at once.
+  it.each([
+    "private_key_pem = MIIEvQIBADAN",
+    "password_for_admin = hunter2",
+    "bind_password_value = hunter2",
+    "keystore_password_hint = abc",
+    "license_key_data = XYZ",
+    "truststore_passphrase_b64 = zzz",
+  ])("redacts a credential word mid-key: %s", (line) => {
+    expect(redactConfigSecrets(line)).toContain("[REDACTED]");
+  });
+
+  it.each([
+    "min_password_length = 0",
+    "password_policy = strict",
+    "private_key_file = /etc/ssl/pk.pem",
+    "api_key_path = /etc/keys",
+    "password_max_age = 90",
+  ])("still leaves policy and path keys visible: %s", (line) => {
+    expect(redactConfigSecrets(line)).not.toContain("[REDACTED]");
+  });
+
+  // Reports carry prose, tool error text and JSON -- not just clean INI lines.
+  // Line-anchoring the pattern silently stopped redacting all three.
+  it.each([
+    "Error: startup failed, license_key = TRIAL-ABC-123",
+    "  config drift detected: ldap.bind_password = hunter2",
+    "The operator set private_key = MIIEvQIBADAN in the file",
+    '{"license_key": "ABC-123"}',
+    "tail: api.secret=zzz",
+  ])("redacts a sensitive assignment that is not at line start: %s", (line) => {
+    const out = redactConfigSecrets(line);
+    expect(out).toContain("[REDACTED]");
+    expect(out).not.toMatch(/TRIAL-ABC|hunter2|MIIEvQ|ABC-123|zzz/);
+  });
+
+  // Boolean-flag prefixes: `use_managed_credentials` is on/off, not a secret,
+  // and hiding it costs cloud-tier diagnosis.
+  it.each([
+    "use_managed_credentials = true",
+    "tier.cold0.default.use_managed_credentials = false",
+    "enable_secret_rotation = true",
+    "require_password = TRUE",
+  ])("leaves boolean flags visible: %s", (line) => {
+    expect(redactConfigSecrets(line)).not.toContain("[REDACTED]");
+  });
+
+  it.each([
+    "tier.cold0.default.s3_aws_access_key_id = AKIA123",
+    "tier.cold0.default.s3_aws_secret_access_key = abc/def",
+    "tier.cold0.default.azure_storage_account_key = zzz==",
+    "tier.cold0.default.azure_sas_token = sv=2020",
+    "tier.cold0.default.gcs_service_account_keys = {...}",
+  ])("redacts cloud-tier credentials: %s", (line) => {
+    expect(redactConfigSecrets(line)).toContain("[REDACTED]");
+  });
+
+  it("does not match starting mid-key", () => {
+    // "password_length" inside "min_password_length" must not become a match
+    expect(redactConfigSecrets("min_password_length = 0")).not.toContain("[REDACTED]");
+  });
+
+  it("still redacts a token appearing mid-key when it is unambiguous", () => {
+    // `secret` is never a benign config token, wherever it sits
+    expect(redactConfigSecrets("client_secret_id = abc123")).toContain("[REDACTED]");
+  });
+
+  it("redacts every sensitive line in a multi-line block, leaving others", () => {
+    const block = [
+      "license_key = SECRET1",
+      "enable_audit = FALSE",
+      "ai.api.key = SECRET2",
+      "min_password_length = 0",
+    ].join("\n");
+    const out = redactConfigSecrets(block);
+    expect(out).not.toMatch(/SECRET1|SECRET2/);
+    expect(out).toContain("enable_audit = FALSE");
+    expect(out).toContain("min_password_length = 0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prose forms — scrubCredentials must not lose coverage the old pattern had
+//
+// redactConfigSecrets is deliberately precise: it runs over gpudb.conf, where
+// over-redaction hides diagnostics. Report text has the opposite requirement —
+// a miss leaks a credential, over-redaction costs nothing — and the agent's
+// native idiom is `**key**:` / `` `key` = `` / `(key):`, not bare INI.
+// ---------------------------------------------------------------------------
+
+describe("scrubCredentials — decorated prose forms", () => {
+  it.each([
+    ["**license_key**: LICENSE-ABC-123", "LICENSE-ABC-123"],
+    ["The current `license_key` = LICENSE-ABC-123", "LICENSE-ABC-123"],
+    ["- LDAP bind password (security.ldap_bind_password): S3cr3tBindPw", "S3cr3tBindPw"],
+    [
+      "1. Rotate `tier.cold1.default.s3_aws_secret_access_key` (currently: wJalrXUtnFEMI)",
+      "wJalrXUtnFEMI",
+    ],
+    ["Evidence: the license_key in gpudb.conf = LICENSE-ABC-123", "LICENSE-ABC-123"],
+    ["| `ai.api.key` | sk-live-abc123 | changed |", "sk-live-abc123"],
+    ["azure_storage_account_key (current): zzz==", "zzz=="],
+  ])("redacts %s", (line, secret) => {
+    const out = scrubCredentials(line);
+    expect(out).not.toContain(secret);
+  });
+
+  it("never loses coverage the pre-change pattern had", () => {
+    // The old pattern's vocabulary, in decorated form. Every one of these was
+    // redacted before the rewrite and must stay redacted.
+    const OLD_WORDS = ["password", "passwd", "passphrase", "license_key", "private_key", "secret"];
+    for (const w of OLD_WORDS) {
+      for (const form of [`**${w}**: SEKRIT`, `\`${w}\` = SEKRIT`, `note (${w}): SEKRIT`]) {
+        expect(scrubCredentials(form)).not.toContain("SEKRIT");
+      }
+    }
+  });
+
+  // Known limit, unchanged from before the rewrite: a credential conveyed with
+  // no ":"/"="/"|" separator ("the key was set to hunter2") is not reachable by
+  // pattern matching. The prompt tells the agent never to quote secret values;
+  // this scrubber is defence-in-depth behind that, not a substitute for it.
+  it("documents the no-separator limit rather than claiming to cover it", () => {
+    expect(scrubCredentials("the license_key was set to hunter2")).toContain("hunter2");
+  });
+
+  it("leaves an ordinary diagnostic line alone", () => {
+    const out = scrubCredentials("| `tps_per_tom` | 4 | 8 | confirmed |");
+    expect(out).toContain("tps_per_tom");
+    expect(out).toContain("8");
+  });
+});
+
+describe("redactConfigSecrets stays precise (config path is unchanged)", () => {
+  it.each([
+    "min_password_length = 0",
+    "use_managed_credentials = false",
+    "postgres_proxy.ssl_key_file = /etc/pg.key",
+    "tps_per_tom = 4",
+  ])("leaves %s visible for drift detection", (line) => {
+    expect(redactConfigSecrets(line)).not.toContain("[REDACTED]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSecretConfigKey — the structured counterpart to CONFIG_SECRET_PATTERN
+//
+// The bundle path returns parsed {section, key, value} entries rather than text,
+// so it can decide per key name instead of pattern-matching a line. Both share
+// the token sets so the two paths cannot drift apart.
+// ---------------------------------------------------------------------------
+
+describe("isSecretConfigKey", () => {
+  it.each([
+    "license_key",
+    "ai.api.key",
+    "external_authentication_handshake_key",
+    "security.ldap_bind_password",
+    "tier.cold0.default.s3_aws_secret_access_key",
+    "tier.cold0.default.s3_aws_access_key_id",
+    "tier.cold0.default.azure_storage_account_key",
+    "tier.cold0.default.azure_sas_token",
+    "tier.cold0.default.azure_client_secret",
+    "tier.cold0.default.gcs_service_account_private_key",
+    "tier.cold0.default.s3_encryption_customer_key",
+    "keystore_passphrase",
+    "svc.credentials",
+  ])("treats %s as a secret", (key) => {
+    expect(isSecretConfigKey(key)).toBe(true);
+  });
+
+  it.each([
+    "min_password_length",
+    "password_policy",
+    "use_managed_credentials",
+    "tier.cold0.default.use_managed_credentials",
+    "postgres_proxy.ssl_key_file",
+    "https_cert_file",
+    "postgres_proxy.ssl_ciphers",
+    "tps_per_tom",
+    "enable_audit",
+    "chunk_size",
+    "require_authentication",
+  ])("treats %s as safe to show", (key) => {
+    expect(isSecretConfigKey(key)).toBe(false);
+  });
+
+  it("agrees with CONFIG_SECRET_PATTERN on the same key names", () => {
+    const keys = [
+      "license_key",
+      "ai.api.key",
+      "security.ldap_bind_password",
+      "tier.cold0.default.s3_aws_secret_access_key",
+      "min_password_length",
+      "use_managed_credentials",
+      "postgres_proxy.ssl_key_file",
+      "tps_per_tom",
+    ];
+    for (const k of keys) {
+      const viaPattern = redactConfigSecrets(`${k} = SOMEVALUE`).includes("[REDACTED]");
+      expect(isSecretConfigKey(k)).toBe(viaPattern);
+    }
   });
 });

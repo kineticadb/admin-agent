@@ -185,6 +185,54 @@ describe("showConfiguration", () => {
     }
   });
 
+  // The vocabulary above is the pre-2026-09 set. These are the keys a real
+  // gpudb.conf also carries that an enumerated license_key|private_key rule
+  // missed, plus the policy/flag keys that must stay readable — a redaction test
+  // whose fixture holds only secrets cannot catch over-redaction.
+  it("redacts cloud-storage and API credentials a bare key-word list misses", async () => {
+    const secretConfig = [
+      "[gpudb]",
+      "ai.api.key = sk-live-abc123",
+      "external_authentication_handshake_key = hs-secret-xyz",
+      "tier.cold0.default.s3_aws_access_key_id = AKIAEXAMPLE",
+      "tier.cold0.default.s3_aws_secret_access_key = wJalrXUtnFEMI",
+      "tier.cold0.default.azure_sas_token = sv=2020-signature",
+      "tier.cold0.default.gcs_service_account_private_key = MIIEvQIBADAN",
+    ].join("\n");
+    const session = makeHmSession({ ok: true, status: 200, body: makeSuccessBody(secretConfig) });
+
+    const result = await showConfiguration(session, {});
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const cs = result.data.config_string;
+      expect(cs).not.toMatch(/sk-live-abc123|hs-secret-xyz|AKIAEXAMPLE|wJalrXUtnFEMI|MIIEvQIBADAN/);
+      expect(cs).not.toContain("sv=2020-signature");
+      expect(cs).toContain("ai.api.key = [REDACTED]");
+    }
+  });
+
+  it("leaves policy, flag and path values readable for diagnosis", async () => {
+    const config = [
+      "[gpudb]",
+      "min_password_length = 0",
+      "tier.cold0.default.use_managed_credentials = false",
+      "postgres_proxy.ssl_key_file = /etc/ssl/private/pg.key",
+      "https_cert_file = /etc/ssl/certs/kinetica.pem",
+      "tps_per_tom = 4",
+    ].join("\n");
+    const session = makeHmSession({ ok: true, status: 200, body: makeSuccessBody(config) });
+
+    const result = await showConfiguration(session, {});
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.config_string).not.toContain("[REDACTED]");
+      expect(result.data.config_string).toContain("/etc/ssl/private/pg.key");
+      expect(result.data.config_string).toContain("min_password_length = 0");
+    }
+  });
+
   it("returns empty config_string when inner data has no config_string field", async () => {
     const inner = JSON.stringify({ info: { note: "empty" } });
     const session = makeHmSession({
