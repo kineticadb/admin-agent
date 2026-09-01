@@ -14,12 +14,21 @@ resource-group reports.
 
 ## Rank 0 — Head / Coordinator
 
-- Stores only **metadata** (~4 MB RAM steady-state).
+- Stores only **metadata** — the footprint scales with catalog size
+  (tables/columns/objects), not with data volume, so it is install-specific
+  (4 MiB on an idle 2-rank dev cluster). Read it with `kinetica_get_metrics`
+  (per-rank `ram_used`).
 - Has **no** `PERSIST` / `DISK` / `VRAM` tiers configured — data
   tiers live on worker ranks.
 - Has **no** resource objects (nothing to place in tiers).
 - Has **no** `rank_usage` entry in resource groups.
-- Much lower RAM limit, typically ~750 MB.
+- Much lower RAM limit than a worker, but the figure is **install-specific —
+  never assume or recommend one**. The parameter is `tier.ram.rank0.limit`, a
+  rank override of `tier.ram.default.limit`. Observed caps span ~0.79 GB on a
+  small dev cluster to 67.5 GB on a 754 GiB host — a spread, not a target.
+  Always read it: `kinetica_get_system_properties`
+  (`conf.tier.ram.rank0.limit`) for the configured value,
+  `kinetica_get_metrics` (per-rank `ram_limit`) for the cap in force.
 - Responsible for coordinating queries, query planning, and routing
   requests to worker ranks.
 
@@ -29,7 +38,8 @@ resource-group reports.
 - Have full tier configuration (RAM / PERSIST / DISK / VRAM as
   configured in `gpudb.conf`).
 - All 16,384 shards map to worker ranks (rank 0 holds no shards).
-- RAM limits typically 5+ GB per rank.
+- RAM limits come from `tier.ram.default.limit` (or a `tier.ram.rankN.limit`
+  override) and are as install-specific as rank 0's — read them, never assume.
 
 ## Where queries are logged — rank 0 only (crash forensics)
 
