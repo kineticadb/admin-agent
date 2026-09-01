@@ -33,15 +33,24 @@ describe("GetSystemPropertiesSchema", () => {
 
 // ---- getSystemProperties function ----
 
+/**
+ * Real key names, taken from a live 7.2.3.20 cluster. The previous fixture
+ * invented a namespace (memory.shared, gpu.count, network.timeout) that does not
+ * exist, so the suite proved `startsWith` worked on made-up data while teaching a
+ * usage that returns zero rows: /show/system/properties prefixes almost every
+ * name with `conf.` and dot-sections it, so `category: "tier"` finds nothing and
+ * `category: "conf.tier"` is required.
+ */
 const FULL_PROPERTY_MAP = {
-  "memory.shared": "8192",
-  "memory.limit": "16384",
-  "memory.swap": "4096",
-  "gpu.count": "4",
-  "gpu.memory": "32768",
-  "GPU.enabled": "true",
-  "system.threads": "32",
-  "network.timeout": "30",
+  "conf.tier.ram.rank0.limit": "793900000",
+  "conf.tier.ram.rank1.limit": "5557299999",
+  "conf.tier.disk0.default.limit": "-1",
+  "conf.sql.plan_cache_size": "4000",
+  "conf.sql.parallel_execution": "TRUE",
+  "conf.kafka.batch_size": "20000",
+  "conf.tps_per_tom": "4",
+  "version.gpudb_core_version": "7.2.3.20",
+  "system.font_families": "DejaVu Sans",
 };
 
 function makeSession(
@@ -87,8 +96,8 @@ describe("getSystemProperties", () => {
     if (result.ok) {
       const data = result.data as Array<Record<string, string>>;
       expect(data).toHaveLength(Object.keys(FULL_PROPERTY_MAP).length);
-      expect(data[0]).toEqual({ property: "memory.shared", value: "8192" });
-      expect(data).toContainEqual({ property: "gpu.count", value: "4" });
+      expect(data[0]).toEqual({ property: "conf.tier.ram.rank0.limit", value: "793900000" });
+      expect(data).toContainEqual({ property: "conf.tps_per_tom", value: "4" });
       expect(result.rowCount).toBe(Object.keys(FULL_PROPERTY_MAP).length);
     }
   });
@@ -96,7 +105,7 @@ describe("getSystemProperties", () => {
   it("filters property_map by category prefix", async () => {
     const session = makeSession(FULL_PROPERTY_MAP);
 
-    const input = GetSystemPropertiesSchema.parse({ category: "memory" });
+    const input = GetSystemPropertiesSchema.parse({ category: "conf.tier" });
     const result = await getSystemProperties(session, input);
 
     expect(result.ok).toBe(true);
@@ -104,53 +113,87 @@ describe("getSystemProperties", () => {
       const data = result.data as Array<Record<string, string>>;
       const properties = data.map((r) => r.property);
       expect(properties).toEqual(
-        expect.arrayContaining(["memory.shared", "memory.limit", "memory.swap"]),
+        expect.arrayContaining([
+          "conf.tier.ram.rank0.limit",
+          "conf.tier.ram.rank1.limit",
+          "conf.tier.disk0.default.limit",
+        ]),
       );
-      expect(properties).not.toContain("gpu.count");
-      expect(properties).not.toContain("system.threads");
+      expect(properties).not.toContain("conf.tps_per_tom");
+      expect(properties).not.toContain("version.gpudb_core_version");
     }
   });
 
-  it("filters property_map by category prefix starting with 'mem'", async () => {
+  it("filters on a partial prefix within the conf. namespace", async () => {
     const session = makeSession(FULL_PROPERTY_MAP);
 
-    const input = GetSystemPropertiesSchema.parse({ category: "mem" });
+    const input = GetSystemPropertiesSchema.parse({ category: "conf.tier.ram" });
     const result = await getSystemProperties(session, input);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       const data = result.data as Array<Record<string, string>>;
-      expect(data).toHaveLength(3);
-      const properties = data.map((r) => r.property);
-      expect(properties).toEqual(
-        expect.arrayContaining(["memory.shared", "memory.limit", "memory.swap"]),
-      );
+      expect(data).toHaveLength(2);
     }
   });
+
+  // The trap the tool description warns about: category is a raw prefix match,
+  // and real names carry the conf. prefix, so the intuitive bare category is
+  // silently empty rather than an error.
+  it.each(["tier", "sql", "kafka"])(
+    "returns zero rows for the bare category %s (conf. prefix required)",
+    async (category) => {
+      const session = makeSession(FULL_PROPERTY_MAP);
+      const result = await getSystemProperties(
+        session,
+        GetSystemPropertiesSchema.parse({ category }),
+      );
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.data as unknown[]).toHaveLength(0);
+    },
+  );
 
   it("filters property_map by key_pattern (case-insensitive substring)", async () => {
     const session = makeSession(FULL_PROPERTY_MAP);
 
-    const input = GetSystemPropertiesSchema.parse({ key_pattern: "gpu" });
+    const input = GetSystemPropertiesSchema.parse({ key_pattern: "SQL" });
     const result = await getSystemProperties(session, input);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       const data = result.data as Array<Record<string, string>>;
       const properties = data.map((r) => r.property);
-      // Both "gpu.count" and "GPU.enabled" should match (case-insensitive)
+      // key_pattern is a case-insensitive SUBSTRING, so it reaches through the
+      // conf. prefix where category cannot.
       expect(properties).toEqual(
-        expect.arrayContaining(["gpu.count", "gpu.memory", "GPU.enabled"]),
+        expect.arrayContaining(["conf.sql.plan_cache_size", "conf.sql.parallel_execution"]),
       );
-      expect(properties).not.toContain("memory.shared");
-      expect(properties).not.toContain("system.threads");
+      expect(properties).not.toContain("conf.tps_per_tom");
+    }
+  });
+
+  it("key_pattern finds a property by its bare name despite the conf. prefix", async () => {
+    const session = makeSession(FULL_PROPERTY_MAP);
+
+    const result = await getSystemProperties(
+      session,
+      GetSystemPropertiesSchema.parse({ key_pattern: "tps_per_tom" }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data as Array<Record<string, string>>).toContainEqual({
+        property: "conf.tps_per_tom",
+        value: "4",
+      });
     }
   });
 
   it("returns correct rowCount for filtered results", async () => {
     const session = makeSession(FULL_PROPERTY_MAP);
 
-    const input = GetSystemPropertiesSchema.parse({ category: "memory" });
+    const input = GetSystemPropertiesSchema.parse({ category: "conf.tier" });
     const result = await getSystemProperties(session, input);
 
     expect(result.ok).toBe(true);

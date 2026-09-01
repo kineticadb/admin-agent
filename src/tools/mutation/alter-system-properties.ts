@@ -6,8 +6,12 @@
  *   1. Capture before-state by reading /show/system/properties for requested keys.
  *      On failure, before_state is empty -- mutation still proceeds.
  *   2. Apply changes via /alter/system/properties.
- *   3. Re-read /show/system/properties to verify changes took effect.
- *      Sets verification to "confirmed" | "failed" | "unavailable".
+ *   3. Re-read /show/system/properties to verify. Sets verification to
+ *      "confirmed" | "failed" | "not_reported" | "unavailable".
+ *
+ * The endpoint is NOT an in-memory change -- it edits
+ * /opt/gpudb/core/etc/gpudb.conf in place, so "confirmed" means PERSISTED, not
+ * applied. See knowledge/references/gpudb-conf.md for the measurement.
  *
  * Never throws -- all error paths return ToolResult with ok:false.
  * Never mutates session or response objects.
@@ -37,11 +41,16 @@ export type AlterSystemPropertiesInput = z.infer<typeof AlterSystemPropertiesSch
 // ---------------------------------------------------------------------------
 // Allow-list: properties supported by /alter/system/properties (7.2.x)
 // Source: https://docs.kinetica.com/7.2/api/rest/alter_system_properties_rest
+//
+// The endpoint rejects enable_procs and worker_endpoint_threads ("is not a valid
+// parameter"), so their absence here is correct; every other testable name was
+// accepted.
 // ---------------------------------------------------------------------------
 
 /**
- * The 43 properties documented as supported by /alter/system/properties.
- * Any property not in this set will be rejected before making a network call.
+ * The 43 property names the 7.2 REST docs list; anything else is rejected before
+ * a network call. Membership means the endpoint STORES the value, not that the
+ * running system acts on it -- see verification and restart_note for that.
  */
 const ALTERABLE_PROPERTIES: ReadonlySet<string> = new Set([
   "concurrent_kernel_execution",
@@ -90,6 +99,78 @@ const ALTERABLE_PROPERTIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Properties the endpoint stores but the running process ignores until restart.
+ *
+ * Measured: tps_per_tom 4->8 changed zero threads on either rank, and
+ * enable_audit=TRUE (content flags on) produced no audit output -- yet both read
+ * back changed. So report the value as stored, never as in effect.
+ *
+ * See knowledge/references/gpudb-conf.md for provenance and its limits.
+ */
+const RESTART_SUSPECT_PROPERTIES: ReadonlySet<string> = new Set([
+  "tps_per_tom",
+  "tcs_per_tom",
+  "subtask_concurrency_limit",
+  "enable_audit",
+]);
+
+/** Requested keys whose runtime effect is unverified, in request order. */
+export function findRestartSuspectProperties(requestedKeys: readonly string[]): readonly string[] {
+  return requestedKeys.filter((key) => RESTART_SUSPECT_PROPERTIES.has(key));
+}
+
+/** Prefix /show/system/properties uses that /alter/system/properties does not. */
+const SHOW_PROPERTIES_PREFIX = "conf.";
+
+/** conf.ai.api.url -> ai_api_url, the spelling /alter uses. */
+function normalizeShowKey(showKey: string): string {
+  const bare = showKey.startsWith(SHOW_PROPERTIES_PREFIX)
+    ? showKey.slice(SHOW_PROPERTIES_PREFIX.length)
+    : showKey;
+  return bare.replaceAll(".", "_");
+}
+
+/**
+ * Reads one property from a /show/system/properties property_map.
+ *
+ * The endpoints disagree on spelling two ways: /show prefixes with "conf.", and
+ * dot-sections what /alter flattens with underscores
+ * (conf.ai.api.url vs ai_api_url). The section boundary is not derivable from
+ * the flat name -- postgres_proxy.keep_alive keeps an underscore inside the
+ * section -- so this normalises RESPONSE keys down rather than guessing dots.
+ *
+ * Order: exact, conf.<exact>, then normalised scan. Ambiguous normalisation
+ * yields undefined. Never a substring match: conf.request_timeout_ms must not
+ * answer request_timeout.
+ */
+export function lookupProperty(
+  propertyMap: Record<string, string>,
+  key: string,
+): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(propertyMap, key)) return propertyMap[key];
+  const prefixed = `${SHOW_PROPERTIES_PREFIX}${key}`;
+  if (Object.prototype.hasOwnProperty.call(propertyMap, prefixed)) return propertyMap[prefixed];
+
+  const matches = Object.keys(propertyMap).filter((k) => normalizeShowKey(k) === key);
+  return matches.length === 1 ? propertyMap[matches[0]] : undefined;
+}
+
+/**
+ * Extracts requested keys, always keyed by the BARE name the caller asked for
+ * regardless of wire spelling, so before_state, after_state and the requested
+ * map stay comparable. Unmatched keys are omitted.
+ */
+function extractProperties(
+  propertyMap: Record<string, string>,
+  requestedKeys: readonly string[],
+): Record<string, string> {
+  return requestedKeys.reduce<Record<string, string>>((acc, key) => {
+    const value = lookupProperty(propertyMap, key);
+    return value === undefined ? acc : { ...acc, [key]: value };
+  }, {});
+}
+
+/**
  * Properties that the API supports but the agent must never set.
  * Defense-in-depth: the system prompt also warns against these.
  */
@@ -120,7 +201,9 @@ type AlterSystemPropertiesData = {
   readonly updated_properties_map: Record<string, string>;
   readonly before_state: Record<string, string>;
   readonly after_state: Record<string, string>;
-  readonly verification: "confirmed" | "failed" | "unavailable";
+  readonly verification: "confirmed" | "failed" | "not_reported" | "unavailable";
+  /** Present only when a requested key has an unverified runtime effect. */
+  readonly restart_note?: string;
 };
 
 /** Shape of /alter/system/properties inner data_str payload. */
@@ -169,31 +252,93 @@ async function readRequestedProperties(
 
     const propertyMap: Record<string, string> = inner.data?.property_map ?? {};
 
-    // Extract only the keys the caller wants to change
-    return Object.fromEntries(
-      requestedKeys
-        .filter((key) => Object.prototype.hasOwnProperty.call(propertyMap, key))
-        .map((key) => [key, propertyMap[key]]),
-    );
+    return extractProperties(propertyMap, requestedKeys);
   } catch {
     return {};
   }
 }
 
 /**
- * Compares after-state values against the requested update map.
- * Returns "confirmed" if all values match, "failed" if any differ.
+ * Compares after-state against the requested map.
+ *
+ * "not_reported" exists because 7 of the 43 properties are absent from
+ * /show/system/properties (e.g. execution_mode, which /alter accepts and
+ * echoes): an unreadable property is not a failed mutation. A genuine mismatch
+ * outranks an unreadable one.
  */
 function computeVerification(
   requestedMap: Record<string, string>,
   afterState: Record<string, string>,
-): "confirmed" | "failed" {
-  for (const [key, expectedValue] of Object.entries(requestedMap)) {
-    if (afterState[key] !== expectedValue) {
-      return "failed";
-    }
+): "confirmed" | "failed" | "not_reported" {
+  const entries = Object.entries(requestedMap);
+  const mismatched = entries.some(
+    ([key, expected]) =>
+      Object.prototype.hasOwnProperty.call(afterState, key) && afterState[key] !== expected,
+  );
+  if (mismatched) return "failed";
+
+  const unreadable = entries.some(
+    ([key]) => !Object.prototype.hasOwnProperty.call(afterState, key),
+  );
+  return unreadable ? "not_reported" : "confirmed";
+}
+
+/**
+ * restart_note for a RESTART_SUSPECT_PROPERTIES write. Warns about EFFECT, never
+ * acceptance -- acceptance is measured, effect is not. undefined when none hit.
+ */
+function buildRestartNote(
+  requestedKeys: readonly string[],
+  verification: "confirmed" | "failed" | "not_reported" | "unavailable",
+): string | undefined {
+  const suspects = findRestartSuspectProperties(requestedKeys);
+  if (suspects.length === 0) return undefined;
+
+  const names = suspects.map((k) => `'${k}'`).join(", ");
+
+  if (verification === "confirmed") {
+    return (
+      `${names} stored successfully — /show/system/properties reports the new value. ` +
+      `That confirms the property store accepted it; it does NOT confirm the running ` +
+      `system picked it up. No endpoint exposes a live thread-pool size, and there is a ` +
+      `field report of 'enable_audit' needing a full 'stop all' + 'start' because a plain ` +
+      `restart kept the cached config. Report the value as stored, not as in effect, and ` +
+      `say a restart may be required to realise it.`
+    );
   }
-  return "confirmed";
+
+  if (verification === "failed") {
+    return (
+      `${names} did not store — the value read back unchanged. On this cluster the ` +
+      `runtime route is closed for it: use kinetica_alter_configuration to edit ` +
+      `gpudb.conf, then tell the operator the database must be restarted. This agent ` +
+      `cannot restart services. (These normally DO store via the runtime route, so ` +
+      `this cluster differs — worth recording with its version.)`
+    );
+  }
+
+  if (verification === "not_reported") {
+    return (
+      `${names} was accepted by the endpoint but is not exposed by ` +
+      `/show/system/properties, so neither the store nor the effect could be re-read. ` +
+      `Report it as attempted, not applied.`
+    );
+  }
+
+  return (
+    `${names} — verification was unavailable, so it is unknown whether the value was ` +
+    `even stored, let alone taken into effect. Re-read /show/system/properties before ` +
+    `reporting any outcome.`
+  );
+}
+
+/** Spreads restart_note into the result only when there is one to add. */
+function maybeNote(
+  requestedKeys: readonly string[],
+  verification: "confirmed" | "failed" | "not_reported" | "unavailable",
+): { restart_note?: string } {
+  const note = buildRestartNote(requestedKeys, verification);
+  return note === undefined ? {} : { restart_note: note };
 }
 
 /**
@@ -213,13 +358,19 @@ export async function alterSystemProperties(
 ): Promise<ToolResult<unknown>> {
   const requestedKeys = Object.keys(input.property_updates_map);
 
-  // Pre-flight: reject properties not in the allow-list or in the block-list
+  // Pre-flight: reject properties not in the allow-list or in the block-list.
+  // Restart-suspect keys are NOT rejected here -- they are attempted and the
+  // result annotated (restart_note), since the endpoint does store them.
+  // (enable_procs still falls out below: the docs never listed it as alterable.)
   const disallowed = findDisallowedProperties(requestedKeys);
   if (disallowed.length > 0) {
     return {
       ok: false,
       status: 400,
-      error: `Property rejected: ${disallowed.map((k) => `'${k}'`).join(", ")} not supported by /alter/system/properties`,
+      error:
+        `Property rejected: ${disallowed.map((k) => `'${k}'`).join(", ")} not supported by ` +
+        `/alter/system/properties. If it is a gpudb.conf parameter it must be changed in the ` +
+        `file and the database restarted.`,
       raw: "",
     };
   }
@@ -271,7 +422,7 @@ export async function alterSystemProperties(
 
   // Phase 3: Post-mutation verification (non-blocking on failure)
   let afterState: Record<string, string>;
-  let verification: "confirmed" | "failed" | "unavailable";
+  let verification: "confirmed" | "failed" | "not_reported" | "unavailable";
 
   try {
     const verifyResponse = await session.makeRequest("/show/system/properties", { options: {} });
@@ -292,6 +443,7 @@ export async function alterSystemProperties(
           before_state: beforeState,
           after_state: afterState,
           verification,
+          ...maybeNote(requestedKeys, verification),
         };
         return { ok: true, data };
       }
@@ -303,11 +455,7 @@ export async function alterSystemProperties(
       } else {
         const verifyPropertyMap: Record<string, string> = innerVerify.data?.property_map ?? {};
 
-        afterState = Object.fromEntries(
-          requestedKeys
-            .filter((key) => Object.prototype.hasOwnProperty.call(verifyPropertyMap, key))
-            .map((key) => [key, verifyPropertyMap[key]]),
-        );
+        afterState = extractProperties(verifyPropertyMap, requestedKeys);
 
         verification = computeVerification(input.property_updates_map, afterState);
       }
@@ -322,6 +470,7 @@ export async function alterSystemProperties(
     before_state: beforeState,
     after_state: afterState,
     verification,
+    ...maybeNote(requestedKeys, verification),
   };
 
   return { ok: true, data };
