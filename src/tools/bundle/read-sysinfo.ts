@@ -6,10 +6,17 @@
  * EXEC_CMD/EXEC_END format. This returns those command blocks so the agent can
  * inspect host-level facts (memory pressure, GPU presence, disk, THP) the live
  * endpoints never expose.
+ *
+ * ps.txt process arguments and environment dumps can carry credentials
+ * (--password=, KINETICA_PASS=, a URL with userinfo), so command and output are
+ * passed through scrubCredentialPatterns. That redactor is deliberately narrow:
+ * host diagnostics are the reason this tool exists, and over-redaction would
+ * destroy the evidence.
  */
 
 import { z } from "zod";
 import type { BundleSource } from "../../bundle/BundleSource.js";
+import { scrubCredentialPatterns } from "../audit-redact.js";
 import type { ToolResult } from "../../types/index.js";
 
 export const BundleReadSysinfoSchema = z.object({
@@ -33,9 +40,9 @@ export async function bundleReadSysinfo(
     data: {
       ...(result.header !== undefined ? { source_file: result.header } : {}),
       blocks: result.blocks.map((b) => ({
-        command: b.command,
+        command: scrubCredentialPatterns(b.command),
         ...(b.exitCode !== undefined ? { exit_code: b.exitCode } : {}),
-        output: b.output,
+        output: scrubCredentialPatterns(b.output),
       })),
     },
   };

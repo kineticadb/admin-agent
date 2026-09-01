@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import type { BundleSource, BundleLogQuery } from "../../bundle/BundleSource.js";
+import { scrubCredentialPatterns } from "../audit-redact.js";
 import type { ToolResult } from "../../types/index.js";
 
 export const BundleSearchLogsSchema = z.object({
@@ -82,7 +83,9 @@ export async function bundleSearchLogs(
         timestamp: m.timestamp ?? "",
         severity: m.severity ?? "",
         rank: m.rank ?? "",
-        message: m.message,
+        // Logged SQL can carry inline credentials (IDENTIFIED BY, SET PASSWORD).
+        // The redactor is narrow by design -- these lines are the evidence.
+        message: scrubCredentialPatterns(m.message),
       })),
     },
   };

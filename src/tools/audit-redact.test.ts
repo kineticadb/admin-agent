@@ -114,3 +114,59 @@ describe("redactAuditInput", () => {
     expect(input.config_string).toBe("rank_count = 2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Inline credential forms found in bundle artifacts
+//
+// scrubCredentialPatterns is now also the redactor for kinetica_bundle_read_sysinfo
+// (ps.txt process args, env dumps) and kinetica_bundle_search_logs (logged SQL).
+// Logs are the primary diagnostic evidence, so these patterns must stay targeted:
+// a log line that merely mentions "password" must survive intact.
+// ---------------------------------------------------------------------------
+
+describe("scrubCredentialPatterns — bundle artifact forms", () => {
+  it.each([
+    [
+      "--password=hunter2 in a process arg",
+      "tool --user=admin --password=hunter2 --host=n2",
+      "hunter2",
+    ],
+    ["--password with a space", "python3 load.py --password hunter2 --url http://x", "hunter2"],
+    ["env dump KINETICA_PASS", "KINETICA_PASS=hunter2", "hunter2"],
+    ["env dump PGPASSWORD", "PGPASSWORD=hunter2", "hunter2"],
+    ["env dump AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI", "wJalrXUtnFEMI"],
+    ["URL userinfo", "psql 'postgresql://admin:hunter2@dbhost.example:5432/db'", "hunter2"],
+    ["SQL SET PASSWORD", "ALTER USER bob SET PASSWORD 'hunter2'", "hunter2"],
+    ["SQL IDENTIFIED BY", "CREATE USER bob IDENTIFIED BY 'hunter2'", "hunter2"],
+  ])("redacts %s", (_label, input, secret) => {
+    expect(scrubCredentialPatterns(input)).not.toContain(secret);
+  });
+
+  // Deliberately NOT redacted: single-letter flags are ambiguous. `-p` means a
+  // PID to ps, a port to many tools, and a password to mysql. ps.txt is full of
+  // `-p <pid>`, and gutting process listings costs more than this covers.
+  // A dash inside a word is not a flag: `base-passwd 3.5.47` in dpkg -l output
+  // matched "-passwd " and redacted the version. Found against a real bundle.
+  it.each([
+    "ii  base-passwd     3.5.47     amd64   Debian base system master password",
+    "ii  libpam-passwdqc 1.3.1      amd64   password strength checker",
+    "my-secret-service.conf loaded",
+  ])("does not treat a dash inside a word as a flag: %s", (line) => {
+    expect(scrubCredentialPatterns(line)).toBe(line);
+  });
+
+  it("leaves ambiguous single-letter flags alone", () => {
+    const line = "gpudb 74100 ps -p 74100 -o comm=";
+    expect(scrubCredentialPatterns(line)).toBe(line);
+  });
+
+  it.each([
+    "2026-08-31 12:00:00.000 ERROR (1,2,r0/x) n2 Rank0RamPool::acquire failed: Avail 793900000",
+    "2026-08-31 12:00:00.000 WARN password policy check failed for user bob",
+    "2026-08-31 12:00:00.000 INFO tps_per_tom = 4 threads started",
+    "2026-08-31 12:00:00.000 INFO min_password_length = 0",
+    "2026-08-31 12:00:00.000 INFO Executing SQL: SELECT count(*) FROM nyctaxi",
+  ])("leaves diagnostic evidence intact: %s", (line) => {
+    expect(scrubCredentialPatterns(line)).toBe(line);
+  });
+});

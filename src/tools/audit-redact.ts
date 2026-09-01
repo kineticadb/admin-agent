@@ -50,6 +50,32 @@ const CREDENTIAL_PATTERNS: readonly { regex: RegExp; replacement: string }[] = [
     regex: /(api[_-]?key|access[_-]?token|secret)['"]?(\s*[:=]\s*)['"]?([^\s'"`,;)]+)['"]?/gi,
     replacement: "$1$2'[REDACTED]'",
   },
+  // SQL `PASSWORD '...'` with no separator (ALTER USER ... SET PASSWORD 'x').
+  // Requires the quote, so "password policy check failed" is untouched.
+  {
+    regex: /(\bpass(?:word|wd)?\s+)(['"])[^'"]*\2/gi,
+    replacement: "$1$2[REDACTED]$2",
+  },
+  // Command-line credential flags in ps output: --password=x, --password x.
+  // The lookbehind is load-bearing: without it "-passwd " inside the package
+  // name `base-passwd` matched and redacted the version in dpkg -l output.
+  {
+    regex: /(?<![\w-])(--?(?:password|passwd|pwd|pass|secret|token|api[_-]?key)[=\s]+)(\S+)/gi,
+    replacement: "$1[REDACTED]",
+  },
+  // Environment dumps: KINETICA_PASS=x, PGPASSWORD=x, AWS_SECRET_ACCESS_KEY=x.
+  // Upper-case only, so lower-case config lines (min_password_length = 0) and
+  // log prose are left alone.
+  {
+    regex:
+      /\b([A-Z][A-Z0-9_]*(?:PASS|PASSWORD|PASSWD|SECRET|TOKEN|APIKEY|API_KEY|ACCESS_KEY)[A-Z0-9_]*\s*=\s*)(\S+)/g,
+    replacement: "$1[REDACTED]",
+  },
+  // URL userinfo: scheme://user:secret@host
+  {
+    regex: /(:\/\/[^\s:/@]+:)([^\s@'"]+)(@)/g,
+    replacement: "$1[REDACTED]$3",
+  },
 ];
 
 /** Produce a stable `<N bytes, sha256:abc123def456…>` fingerprint for a value. */

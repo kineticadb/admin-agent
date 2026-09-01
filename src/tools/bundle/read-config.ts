@@ -5,10 +5,17 @@
  * The bundle's gpudb.conf is the real on-disk config (better than the live
  * host-manager endpoint), so this feeds config-drift and misconfiguration
  * analysis directly.
+ *
+ * Because it IS the real file, it carries live secrets -- license_key, LDAP bind
+ * passwords, TLS material, cloud-tier storage credentials. Values of
+ * credential-bearing keys are masked here, matching what
+ * kinetica_show_configuration does for the live endpoint. Key names are always
+ * preserved so drift detection still works.
  */
 
 import { z } from "zod";
 import type { BundleSource } from "../../bundle/BundleSource.js";
+import { isSecretConfigKey } from "../../report/scrub.js";
 import type { ToolResult } from "../../types/index.js";
 
 export const BundleReadConfigSchema = z.object({
@@ -50,9 +57,26 @@ export async function bundleReadConfig(
     };
   }
 
+  // Mask credential values. An empty value stays empty: "[REDACTED]" on an unset
+  // key would tell the agent a credential is configured when none is.
+  const redactedKeys: string[] = [];
+  const entries = result.entries.map((e) => {
+    const qualified = e.section === "" ? e.key : `${e.section}.${e.key}`;
+    if (e.value !== "" && isSecretConfigKey(qualified)) {
+      redactedKeys.push(e.key);
+      return { section: e.section, key: e.key, value: "[REDACTED]" };
+    }
+    return { section: e.section, key: e.key, value: e.value };
+  });
+
+  const redactionNote =
+    redactedKeys.length > 0
+      ? ` ${redactedKeys.length} credential value(s) redacted (key names kept): ${redactedKeys.join(", ")}.`
+      : "";
+
   return {
     ok: true,
-    note: `${result.entries.length} entr(y/ies) from ${result.file}.`,
-    data: result.entries.map((e) => ({ section: e.section, key: e.key, value: e.value })),
+    note: `${result.entries.length} entr(y/ies) from ${result.file}.${redactionNote}`,
+    data: entries,
   };
 }
