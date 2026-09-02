@@ -3,7 +3,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Node.js >= 20](https://img.shields.io/badge/Node.js-%3E%3D20-green.svg)](https://nodejs.org/)
 
-AI-powered diagnostic agent for [Kinetica](https://www.kinetica.com/) GPU databases. Connects to a live instance — or analyzes an extracted offline support bundle, or both at once — autonomously investigates issues across 28 tools, and produces structured markdown reports with evidence-backed findings and actionable remediation.
+AI-powered diagnostic agent for [Kinetica](https://www.kinetica.com/) GPU databases. Connects to a live instance — or analyzes an extracted offline support bundle, or both at once — autonomously investigates issues across 31 tools, and produces structured markdown reports with evidence-backed findings and actionable remediation.
 
 Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk).
 
@@ -14,6 +14,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
   - [📄 Example Report Output](#example-report-output)
 - [📋 Prerequisites](#prerequisites)
 - [⚙️ Configuration](#configuration)
+  - [📈 Observability (Prometheus / Loki)](#observability-prometheus--loki)
   - [🔑 Authentication](#authentication)
   - [💰 Session Budget](#session-budget)
   - [⚠️ Degraded Mode](#degraded-mode)
@@ -27,6 +28,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
   - [🗃️ SQL Execution (read-only)](#sql-execution-read-only)
   - [✏️ Administrative Mutations (require approval)](#administrative-mutations-require-approval)
   - [🔀 Batch Column Alter (self-approving)](#batch-column-alter-self-approving)
+  - [📈 Observability (read-only)](#observability-read-only-when-a-stats-stack-is-reachable)
   - [📦 Offline Bundle Analysis (read-only)](#offline-bundle-analysis-read-only)
   - [📑 Reporting](#reporting)
 - [🔒 Security](#security)
@@ -47,7 +49,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
 **Key capabilities:**
 
 - Autonomous multi-round investigation with parallel tool calls
-- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 live tools**, plus 6 offline bundle-analysis tools = **28 total**
+- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 live tools**, plus 6 offline bundle-analysis tools and 3 Prometheus/Loki observability tools = **31 total**
 - **Offline support-bundle analysis** — diagnose from an extracted `gpudb_sysinfo` bundle (per-rank logs, `gpudb.conf`, host diagnostics) with no live connection, or attach a bundle alongside a live session to cross-check captured history against current state — even bundles that don't match the standard layout, via file-name and content inference
 - Expert knowledge via pluggable playbooks (no code required to add new ones)
 - Schema-aware SQL — discovers actual column names at startup, never guesses
@@ -174,6 +176,7 @@ Set environment variables or use a `.env` file. The agent loads `.env` automatic
 | `KINETICA_USER`          | Kinetica username                                                                                | Prompted if unset                               |
 | `KINETICA_PASS`          | Kinetica password                                                                                | Prompted if unset (masked, never saved to .env) |
 | `KINETICA_HTTPS_ONLY`    | Set to `1` to refuse plaintext HTTP fallback entirely — strict mode for production clusters      | No                                              |
+| `KINETICA_STATS_HOST`    | Prometheus/Loki host, e.g. `http://statshost` — prompted after the password and saved here       | Prompted if unset                               |
 | `DEBUG`                  | Set to `1` to log HTTP requests and the assembled system-prompt token size to stderr             | No                                              |
 
 ```bash
@@ -183,6 +186,32 @@ cp .env.example .env   # fill in values — or let the agent create it for you
 On first interactive connection, the agent offers to save `KINETICA_URL` and `KINETICA_USER` to `.env` (password is never saved). On subsequent runs with saved values, the agent shows the saved connection and asks to confirm before proceeding.
 
 If you enter a URL without a protocol (e.g., `host:9191`), the agent auto-detects by probing HTTPS first. If HTTPS fails and HTTP succeeds, the agent displays a red warning (credentials would travel in cleartext) and asks for explicit y/n confirmation before falling back. Set `KINETICA_HTTPS_ONLY=1` to refuse the fallback outright — recommended for production. In non-interactive environments (CI, piped input), the fallback is always refused; pass an explicit `http://` prefix if you really want HTTP. On authentication failure (401/403), the agent offers to re-enter credentials instead of retrying with the same values.
+
+### Observability (Prometheus / Loki)
+
+When the cluster runs Kinetica's stats stack, the agent gains three extra tools: `kinetica_tier_snapshot` (per-rank storage utilization with an eviction verdict), `kinetica_prom_query` (arbitrary PromQL, including host CPU/memory/disk and per-process OOM scores), and `kinetica_loki_query` (structured database events — per-statement SQL telemetry, request failures, rank status changes).
+
+Endpoints are discovered automatically from `gpudb.conf`'s `gaia.event_server_address`. **Discovery often needs help**, because a `kagent` install declares an _internal_ address for the stats host and the agent usually runs outside that network. Startup tells you which case you are in:
+
+```
+Observability: Prometheus, Loki
+Observability: declared at http://10.x.x.x:9090 but unreachable from here — ... set KINETICA_STATS_HOST
+Observability: none detected
+```
+
+**You are asked for this at startup**, right after the password, alongside the other connection details:
+
+```
+? Kinetica endpoint URL (e.g. http://dbhost:9191): http://dbhost:9191
+? Admin username: admin
+? Admin password: ********
+? Prometheus/Loki host URL (e.g. http://statshost, blank if none): http://statshost
+? Save KINETICA_URL, KINETICA_USER and KINETICA_STATS_HOST to .env? (Y/n)
+```
+
+Blank is a first-class answer — the session simply runs without metrics. The value is saved to `.env` with the rest of the connection, so you are asked once; confirming a saved connection on later runs asks nothing at all. A non-interactive run (CI, piped input) never prompts and uses `KINETICA_STATS_HOST` if set.
+
+Enter a host or a URL (`statshost`, `http://statshost`, `https://statshost`). The scheme is honoured; any port is ignored, because the ports are per service — Prometheus at `:9090`, Loki at `gaia.event_server_port` (default `:9080`). If you leave it blank the agent still falls back to `gpudb.conf`'s `gaia.event_server_address`, which works when the agent runs on the cluster's own network. One host covers both services: Prometheus is derived at `:9090` and Loki at `gaia.event_server_port` (default `:9080`), which mirrors how `gpudb.conf` models them. Nothing else changes: without a stats stack the agent behaves exactly as before.
 
 ### Authentication
 
@@ -257,7 +286,7 @@ admin-agent --login               # Force OAuth login (even if API key is set)
 admin-agent --login-method=TYPE   # Login method: claudeai (Pro/Max) or console
 admin-agent --login-org=UUID      # Target organization UUID for OAuth
 admin-agent --logout              # Log out from Anthropic account and exit
-admin-agent --model=NAME          # Override agent model (sonnet | haiku | opus); default: sonnet
+admin-agent --model=NAME          # Override agent model (sonnet | haiku | opus | fable); default: sonnet
 admin-agent --max-budget=USD      # Per-session budget cap in USD (API-key billing only); default: 5.00
 admin-agent --bundle=PATH         # Offline mode: diagnose from an extracted support-bundle directory
 ```
@@ -270,7 +299,7 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 ## Tools
 
-28 tools organized into categories: **22 live tools** (used when connected to a running instance) plus **6 offline bundle-analysis tools** (used against an extracted support bundle). Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report, the agent asks the operator (in conversation) whether to save and waits for a yes — so `save_report` only writes once you've agreed.
+31 tools organized into categories: **22 live tools** (used when connected to a running instance), **6 offline bundle-analysis tools** (used against an extracted support bundle), and **3 observability tools** (used when a Prometheus/Loki stats stack is reachable). Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report, the agent asks the operator (in conversation) whether to save and waits for a yes — so `save_report` only writes once you've agreed.
 
 ### System Health & Monitoring
 
@@ -327,6 +356,16 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 | Tool                           | Description                                                                                             |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | `kinetica_alter_table_columns` | Batch 2+ column changes into one ALTER TABLE. Two-step approval: interactive checklist then SQL preview |
+
+### Observability (read-only, when a stats stack is reachable)
+
+Available when Prometheus/Loki are reachable (see [Observability](#observability-prometheus--loki)). All read-only, unauthenticated HTTP GETs. Metrics are reduced to per-series statistics before reaching the agent — min and max carry the timestamps they occurred at, since when a peak happened is usually the finding.
+
+| Tool                     | Description                                                                                                                                                                                                                  |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_tier_snapshot` | Every rank+tier in one call: used vs limit, windowed peak and when, unevictable bytes, bytes remaining before eviction begins, cumulative evictions, and a verdict (ok / pressure / over high-watermark / uncapped)          |
+| `kinetica_prom_query`    | Arbitrary PromQL, summarized. Includes host and process telemetry no other tool can reach — `ki_host_cpu` / `ki_host_mem` / `ki_host_disk` / `ki_host_numa` / `ki_host_swap`, and `ki_exe_mem{what="oom_score"}` per process |
+| `kinetica_loki_query`    | Structured database events — `class="sql"` (per-statement jobid, user, resource group, elapsed, full statement text), `job` (request failures with attribution), `status` (rank transitions), `config`, `mode`               |
 
 ### Offline Bundle Analysis (read-only)
 
