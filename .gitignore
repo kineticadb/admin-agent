@@ -9,4 +9,5 @@ reports/
 .planning/
 .claude/
 bundles/
+temp/
 .codegraph/
