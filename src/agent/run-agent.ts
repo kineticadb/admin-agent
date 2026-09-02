@@ -127,7 +127,7 @@ const EXIT_COMMANDS = new Set(["exit", "quit", "end", "q"]);
  * Exported so the CLI can validate `--model` input against the same source of truth
  * that `runAgent` consumes — no drift between parser and runtime.
  */
-export const SUPPORTED_MODELS = ["sonnet", "haiku", "opus"] as const;
+export const SUPPORTED_MODELS = ["sonnet", "haiku", "opus", "fable"] as const;
 export type AgentModel = (typeof SUPPORTED_MODELS)[number];
 
 /**
@@ -135,6 +135,20 @@ export type AgentModel = (typeof SUPPORTED_MODELS)[number];
  * Exported so the CLI banner can display the same default without duplicating the string.
  */
 export const DEFAULT_AGENT_MODEL: AgentModel = "sonnet";
+
+/**
+ * CLI name -> the string handed to the SDK.
+ *
+ * The SDK takes "a model alias or a full model ID", but its alias set is exactly
+ * sonnet | opus | haiku — `fable` is not one, so it is passed by full ID. The other three
+ * stay aliases so the SDK keeps resolving them to the current version on its own.
+ */
+export const MODEL_IDS: Record<AgentModel, string> = {
+  sonnet: "sonnet",
+  haiku: "haiku",
+  opus: "opus",
+  fable: "claude-fable-5-1",
+};
 
 /**
  * Anthropic authentication method, surfaced from the CLI so the agent can frame the
@@ -542,7 +556,7 @@ export async function runAgent(
     disallowedTools: [...DISALLOWED_TOOLS],
     canUseTool,
     systemPrompt,
-    model: effectiveModel,
+    model: MODEL_IDS[effectiveModel],
     fallbackModel: "haiku" as const,
     thinking: { type: "adaptive" as const },
     maxTurns,

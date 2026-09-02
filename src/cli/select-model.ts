@@ -15,6 +15,7 @@ export const MODEL_LABELS: Record<AgentModel, string> = {
   sonnet: "Sonnet — balanced, best general coding (default)",
   haiku: "Haiku — fastest & cheapest, lighter reasoning",
   opus: "Opus — deepest reasoning, slower & pricier",
+  fable: "Fable — most capable, for long autonomous runs; costs 2× Opus",
 };
 
 /**

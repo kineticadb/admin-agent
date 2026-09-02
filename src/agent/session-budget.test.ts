@@ -10,7 +10,7 @@ import {
   fromSdkUsage,
 } from "./session-budget.js";
 import type { TokenUsage } from "./session-budget.js";
-import { SUPPORTED_MODELS } from "./run-agent.js";
+import { SUPPORTED_MODELS, MODEL_IDS } from "./run-agent.js";
 
 // ---------------------------------------------------------------------------
 // MODEL_PRICING
@@ -222,5 +222,50 @@ describe("createBudgetTracker", () => {
     );
     tracker.add({ outputTokens: tokensForJustOver }, "opus");
     expect(tracker.shouldWarn()).toBe(true);
+  });
+});
+
+describe("MODEL_PRICING — fable", () => {
+  it("prices every supported model, so none can silently cost $0", () => {
+    for (const m of SUPPORTED_MODELS) {
+      expect(MODEL_PRICING[m].inputPerMTok).toBeGreaterThan(0);
+      expect(MODEL_PRICING[m].outputPerMTok).toBeGreaterThan(0);
+    }
+  });
+
+  it("uses fable's published cache read, not the 0.1x ratio the others follow", () => {
+    // 0.1 x $10 would be $1.00; the real rate is $0.25. This agent re-reads a cached
+    // system prompt every turn, so getting it wrong overstates a session ~4x.
+    expect(MODEL_PRICING.fable.cacheReadPerMTok).toBe(0.25);
+    expect(MODEL_PRICING.fable.cacheReadPerMTok).not.toBe(MODEL_PRICING.fable.inputPerMTok * 0.1);
+  });
+
+  it("keeps the 0.1x / 1.25x ratios for the models that do follow them", () => {
+    for (const m of ["sonnet", "haiku", "opus"] as const) {
+      const p = MODEL_PRICING[m];
+      expect(p.cacheReadPerMTok).toBeCloseTo(p.inputPerMTok * 0.1, 5);
+      expect(p.cacheCreationPerMTok).toBeCloseTo(p.inputPerMTok * 1.25, 5);
+    }
+  });
+
+  it("costs more than opus — the picker label says 2x, so keep them consistent", () => {
+    expect(MODEL_PRICING.fable.inputPerMTok).toBe(MODEL_PRICING.opus.inputPerMTok * 2);
+    expect(MODEL_PRICING.fable.outputPerMTok).toBe(MODEL_PRICING.opus.outputPerMTok * 2);
+  });
+});
+
+describe("MODEL_IDS", () => {
+  it("passes fable by full model ID — the SDK's alias set is sonnet|opus|haiku only", () => {
+    expect(MODEL_IDS.fable).toBe("claude-fable-5-1");
+  });
+
+  it("leaves the three real aliases untouched so the SDK still resolves them", () => {
+    expect(MODEL_IDS.sonnet).toBe("sonnet");
+    expect(MODEL_IDS.haiku).toBe("haiku");
+    expect(MODEL_IDS.opus).toBe("opus");
+  });
+
+  it("maps every supported model", () => {
+    for (const m of SUPPORTED_MODELS) expect(MODEL_IDS[m]).toBeTruthy();
   });
 });

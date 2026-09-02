@@ -50,17 +50,29 @@ export type ModelPrice = {
  * using true cost. Update these when Anthropic pricing changes; exactness is not
  * required for the warning to be useful.
  *
- * Anthropic's standard ratios are encoded here: cache *write* ≈ 1.25× base input,
- * cache *read* ≈ 0.1× base input. Keyed over AgentModel so adding a model to
+ * Ratios hold for sonnet/haiku/opus: cache write ≈ 1.25× base input, cache read ≈ 0.1×.
+ * Fable is the exception — see below. Keyed over AgentModel so adding a model to
  * SUPPORTED_MODELS without a price is a typecheck error (no silent $0 pricing).
+ *
+ * Rates verified 2026-09-02 against the published table; opus and sonnet were carrying
+ * previous-generation figures (15/75 and 3/15), which overstated an opus session 3×.
  *
  * NOTE: if the SDK fails over to the fallback model (haiku) mid-session, spend is
  * still estimated with the primary model's rates — an acceptable tripwire imprecision.
  */
 export const MODEL_PRICING: Record<AgentModel, ModelPrice> = {
-  sonnet: { inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.3, cacheCreationPerMTok: 3.75 },
+  sonnet: { inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.2, cacheCreationPerMTok: 2.5 },
   haiku: { inputPerMTok: 1, outputPerMTok: 5, cacheReadPerMTok: 0.1, cacheCreationPerMTok: 1.25 },
-  opus: { inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.5, cacheCreationPerMTok: 18.75 },
+  opus: { inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5, cacheCreationPerMTok: 6.25 },
+  // Fable's cache read is a PUBLISHED $0.25, not the 0.1x ratio ($1.00) — 4x cheaper.
+  // This agent re-reads a cached system prompt every turn, so cache reads dominate the
+  // estimate and the ratio would overstate a Fable session badly.
+  fable: {
+    inputPerMTok: 10,
+    outputPerMTok: 50,
+    cacheReadPerMTok: 0.25,
+    cacheCreationPerMTok: 12.5,
+  },
 };
 
 /**
