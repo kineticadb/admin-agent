@@ -9,6 +9,16 @@ export type Credentials = {
   readonly url: string;
   readonly user: string;
   readonly pass: string;
+  /**
+   * Base URL of the Prometheus/Loki stats host, e.g. `http://statshost`.
+   * Optional — blank means "no metrics for this session".
+   *
+   * Collected here rather than derived from gpudb.conf because the address that file
+   * declares (`gaia.event_server_address`) is the cluster's INTERNAL one, which usually
+   * does not route from wherever the agent runs. Config remains a silent fallback when
+   * this is absent. Ports are per service, so only the scheme and host are used.
+   */
+  readonly statsHost?: string;
 };
 
 // Session object — the pre-authenticated client (used everywhere)

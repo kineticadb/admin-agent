@@ -34,6 +34,7 @@ import {
   escapeEnvValue,
   loadEnvFile,
   offerSaveCredentials,
+  upsertEnvValue,
 } from "./env-file.js";
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
@@ -444,5 +445,127 @@ describe("offerSaveCredentials", () => {
         default: true,
       }),
     );
+  });
+});
+
+describe("upsertEnvValue", () => {
+  it("creates content from nothing", () => {
+    expect(upsertEnvValue(undefined, "KINETICA_STATS_HOST", "statshost")).toBe(
+      "KINETICA_STATS_HOST=statshost\n",
+    );
+  });
+
+  it("replaces an existing key in place, preserving surrounding lines", () => {
+    const before = "# comment\nKINETICA_URL=http://db:9191\nKINETICA_STATS_HOST=old\nOTHER=1\n";
+    const after = upsertEnvValue(before, "KINETICA_STATS_HOST", "new");
+    expect(after).toContain("KINETICA_STATS_HOST=new");
+    expect(after).not.toContain("=old");
+    // Position and neighbours are untouched.
+    expect(after.split("\n").indexOf("KINETICA_STATS_HOST=new")).toBe(2);
+    expect(after).toContain("# comment");
+    expect(after).toContain("OTHER=1");
+  });
+
+  it("appends a new key without disturbing what is there", () => {
+    const before = "KINETICA_URL=http://db:9191\nKINETICA_USER=admin\n";
+    const after = upsertEnvValue(before, "KINETICA_STATS_HOST", "statshost");
+    expect(after).toBe(
+      "KINETICA_URL=http://db:9191\nKINETICA_USER=admin\nKINETICA_STATS_HOST=statshost\n",
+    );
+  });
+
+  it("does not accumulate blank lines on repeated writes", () => {
+    let content = "KINETICA_URL=http://db:9191\n";
+    for (const host of ["a", "b", "c"])
+      content = upsertEnvValue(content, "KINETICA_STATS_HOST", host);
+    expect(content).toBe("KINETICA_URL=http://db:9191\nKINETICA_STATS_HOST=c\n");
+  });
+
+  it("quotes a value that needs it", () => {
+    const out = upsertEnvValue(undefined, "KINETICA_STATS_HOST", "host with space");
+    expect(out.trim()).toMatch(/^KINETICA_STATS_HOST=/);
+    expect(out).toContain("host with space");
+  });
+});
+
+describe("offerSaveCredentials — stats host", () => {
+  const originalIsTTY = process.stdin.isTTY;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockConfirm.mockResolvedValue(true);
+    mockReadFile.mockRejectedValue(new Error("no file"));
+    mockWriteFile.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
+    vi.restoreAllMocks();
+  });
+
+  it("persists the stats host the operator supplied", async () => {
+    await offerSaveCredentials("http://db:9191", "admin", "/tmp/x", "http://statshost");
+    const [, content] = mockWriteFile.mock.calls[0] as [string, string];
+    expect(content).toContain("KINETICA_STATS_HOST=http://statshost");
+  });
+
+  it("names it in the confirmation so the operator knows what is being written", async () => {
+    await offerSaveCredentials("http://db:9191", "admin", "/tmp/x", "http://statshost");
+    const [{ message }] = mockConfirm.mock.calls[0] as [{ message: string }];
+    expect(message).toContain("KINETICA_STATS_HOST");
+    expect(message).toContain("password is never saved");
+  });
+
+  it("does not mention it when there is none to save", async () => {
+    await offerSaveCredentials("http://db:9191", "admin", "/tmp/x");
+    const [{ message }] = mockConfirm.mock.calls[0] as [{ message: string }];
+    expect(message).not.toContain("KINETICA_STATS_HOST");
+  });
+
+  it("writes nothing at all when the operator declines", async () => {
+    mockConfirm.mockResolvedValue(false);
+    await offerSaveCredentials("http://db:9191", "admin", "/tmp/x", "http://statshost");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildEnvContent — stats host", () => {
+  it("writes KINETICA_STATS_HOST into a fresh file", () => {
+    const out = buildEnvContent("http://db:9191", "admin", undefined, "http://statshost");
+    expect(out).toContain("KINETICA_STATS_HOST=http://statshost");
+    expect(out).toContain("KINETICA_URL=http://db:9191");
+  });
+
+  it("leaves the placeholder empty when no stats host was given", () => {
+    const out = buildEnvContent("http://db:9191", "admin");
+    expect(out).toContain("KINETICA_STATS_HOST=");
+    expect(out).not.toMatch(/KINETICA_STATS_HOST=\{statsHost\}/);
+  });
+
+  it("adds the key to an existing file that lacks it, leaving other keys alone", () => {
+    const existing = "KINETICA_URL=http://old:9191\nKINETICA_USER=old\nOTHER=keep\n";
+    const out = buildEnvContent("http://db:9191", "admin", existing, "http://statshost");
+    expect(out).toContain("KINETICA_STATS_HOST=http://statshost");
+    expect(out).toContain("OTHER=keep");
+    expect(out).toContain("KINETICA_URL=http://db:9191");
+  });
+
+  it("updates an existing stats host in place", () => {
+    const existing =
+      "KINETICA_URL=http://db:9191\nKINETICA_STATS_HOST=http://old\nKINETICA_USER=admin\n";
+    const out = buildEnvContent("http://db:9191", "admin", existing, "http://new");
+    expect(out).toContain("KINETICA_STATS_HOST=http://new");
+    expect(out).not.toContain("http://old");
+  });
+
+  it("does NOT touch an existing stats host when none was supplied", () => {
+    // A session where the operator was not asked (saved-connection path) must not wipe
+    // a host they configured earlier.
+    const existing =
+      "KINETICA_URL=http://db:9191\nKINETICA_USER=admin\nKINETICA_STATS_HOST=http://keepme\n";
+    const out = buildEnvContent("http://db:9191", "admin", existing);
+    expect(out).toContain("KINETICA_STATS_HOST=http://keepme");
   });
 });

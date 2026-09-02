@@ -4,6 +4,7 @@ import { collectCredentials, repromptCredentials } from "./collect.js";
 import { createSession } from "./KineticaSession.js";
 import { offerSaveCredentials } from "./env-file.js";
 import { resolveUrl } from "./resolve-url.js";
+import { readStatsHostEnv } from "../observability/discover.js";
 import type { KineticaSession } from "../types/index.js";
 
 const MAX_RETRIES = 3;
@@ -26,6 +27,8 @@ export type ConnectResult = {
   readonly session: KineticaSession;
   readonly kineticaVersion: string | undefined;
   readonly degraded: boolean;
+  /** Prometheus/Loki base URL the operator supplied, if any. */
+  readonly statsHost?: string;
 };
 
 export type HostManagerProbeResult =
@@ -156,7 +159,12 @@ export async function connectBestEffort(): Promise<ConnectResult | undefined> {
     });
     const kineticaVersion = await verifyConnectivity(probe);
     const session = createSession(resolved.url, user, pass);
-    return { session, kineticaVersion, degraded: false };
+    return {
+      session,
+      kineticaVersion,
+      degraded: false,
+      statsHost: readStatsHostEnv(),
+    };
   } catch {
     return undefined;
   }
@@ -164,6 +172,7 @@ export async function connectBestEffort(): Promise<ConnectResult | undefined> {
 
 export async function connectWithRetry(): Promise<ConnectResult> {
   const { credentials, prompted } = await collectCredentials();
+  const statsHost = credentials.statsHost;
 
   // Resolve protocol if missing (probes https first, then http)
   const resolved = await resolveUrl(credentials.url);
@@ -184,9 +193,9 @@ export async function connectWithRetry(): Promise<ConnectResult> {
       const kineticaVersion = await verifyConnectivity(session);
       console.error(pc.green("Connected to Kinetica successfully."));
       if (prompted.size > 0 || wasReprompted) {
-        await offerSaveCredentials(resolvedUrl, currentUser);
+        await offerSaveCredentials(resolvedUrl, currentUser, undefined, statsHost);
       }
-      return { session, kineticaVersion, degraded: false };
+      return { session, kineticaVersion, degraded: false, statsHost };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(pc.red(`Connection failed (attempt ${attempt}/${MAX_RETRIES}): ${msg}`));
@@ -225,9 +234,9 @@ export async function connectWithRetry(): Promise<ConnectResult> {
             ),
           );
           if (prompted.size > 0 || wasReprompted) {
-            await offerSaveCredentials(resolvedUrl, currentUser);
+            await offerSaveCredentials(resolvedUrl, currentUser, undefined, statsHost);
           }
-          return { session, kineticaVersion: hmResult.version, degraded: true };
+          return { session, kineticaVersion: hmResult.version, degraded: true, statsHost };
         }
         console.error(pc.red("Host manager also unreachable. Exiting."));
         process.exit(1);

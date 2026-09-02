@@ -31,6 +31,7 @@ describe("collectCredentials", () => {
     delete process.env.KINETICA_URL;
     delete process.env.KINETICA_USER;
     delete process.env.KINETICA_PASS;
+    delete process.env.KINETICA_STATS_HOST;
     // Default to non-interactive so existing tests don't trigger the confirmation
     originalIsTTY = process.stdin.isTTY;
     Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
@@ -42,6 +43,10 @@ describe("collectCredentials", () => {
     process.env.KINETICA_URL = ORIGINAL_ENV.KINETICA_URL;
     process.env.KINETICA_USER = ORIGINAL_ENV.KINETICA_USER;
     process.env.KINETICA_PASS = ORIGINAL_ENV.KINETICA_PASS;
+    // NOT `process.env.X = original` — assigning undefined stores the STRING "undefined",
+    // which then leaks into the next test as a truthy value.
+    if (ORIGINAL_ENV.KINETICA_STATS_HOST === undefined) delete process.env.KINETICA_STATS_HOST;
+    else process.env.KINETICA_STATS_HOST = ORIGINAL_ENV.KINETICA_STATS_HOST;
     Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
     consoleErrorSpy.mockRestore();
   });
@@ -174,6 +179,10 @@ describe("collectCredentials — saved connection confirmation", () => {
     process.env.KINETICA_URL = ORIGINAL_ENV.KINETICA_URL;
     process.env.KINETICA_USER = ORIGINAL_ENV.KINETICA_USER;
     process.env.KINETICA_PASS = ORIGINAL_ENV.KINETICA_PASS;
+    // NOT `process.env.X = original` — assigning undefined stores the STRING "undefined",
+    // which then leaks into the next test as a truthy value.
+    if (ORIGINAL_ENV.KINETICA_STATS_HOST === undefined) delete process.env.KINETICA_STATS_HOST;
+    else process.env.KINETICA_STATS_HOST = ORIGINAL_ENV.KINETICA_STATS_HOST;
     Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
     consoleErrorSpy.mockRestore();
   });
@@ -199,12 +208,14 @@ describe("collectCredentials — saved connection confirmation", () => {
 
     const result = await collectCredentials();
 
-    expect(result.credentials).toEqual({
+    expect(result.credentials).toMatchObject({
       url: "http://host1:9191",
       user: "admin",
       pass: "secret",
     });
     expect(result.prompted.size).toBe(0);
+    // Confirming a saved connection asks NOTHING — including the stats host, which would
+    // otherwise nag every launch of a cluster that has no stats stack.
     expect(mockInput).not.toHaveBeenCalled();
   });
 
@@ -213,7 +224,10 @@ describe("collectCredentials — saved connection confirmation", () => {
     process.env.KINETICA_USER = "admin";
     process.env.KINETICA_PASS = "secret";
     mockConfirm.mockResolvedValue(false);
-    mockInput.mockResolvedValueOnce("http://new-host:9191").mockResolvedValueOnce("new-admin");
+    mockInput
+      .mockResolvedValueOnce("http://new-host:9191")
+      .mockResolvedValueOnce("new-admin")
+      .mockResolvedValueOnce("http://statshost");
     mockPassword.mockResolvedValue("new-pass");
 
     const result = await collectCredentials();
@@ -222,9 +236,72 @@ describe("collectCredentials — saved connection confirmation", () => {
       url: "http://new-host:9191",
       user: "new-admin",
       pass: "new-pass",
+      statsHost: "http://statshost",
     });
     expect(result.prompted.has("url")).toBe(true);
     expect(result.prompted.has("user")).toBe(true);
+    expect(result.prompted.has("statsHost")).toBe(true);
+  });
+
+  it("shows an example URL on the endpoint prompt, in both branches that ask for it", async () => {
+    // A bare hostname is also accepted (resolve-url probes the scheme), but showing a
+    // full URL is the least ambiguous nudge for someone seeing this for the first time.
+    mockInput
+      .mockResolvedValueOnce("http://host1:9191")
+      .mockResolvedValueOnce("admin")
+      .mockResolvedValueOnce("");
+    mockPassword.mockResolvedValue("pass");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+
+    await collectCredentials();
+
+    expect(String(mockInput.mock.calls[0][0].message)).toContain("http://dbhost:9191");
+  });
+
+  it("asks for the stats host after the password, and accepts a blank answer", async () => {
+    mockInput
+      .mockResolvedValueOnce("http://host1:9191")
+      .mockResolvedValueOnce("admin")
+      .mockResolvedValueOnce("   ");
+    mockPassword.mockResolvedValue("pass");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+
+    const result = await collectCredentials();
+
+    expect(result.credentials.statsHost).toBeUndefined();
+    // Order matters: the stats question comes after the password, not before it.
+    expect(mockInput).toHaveBeenCalledTimes(3);
+    const label = String(mockInput.mock.calls[2][0].message);
+    expect(label).toMatch(/prometheus|loki/i);
+    // The example is the only thing signalling that no port belongs here — discover.ts
+    // discards one silently — and it must stay port-less for that contrast to work
+    // against the endpoint prompt's `http://dbhost:9191`.
+    expect(label).toContain("http://statshost");
+    expect(label).not.toMatch(/statshost:\d/);
+    expect(label).toMatch(/blank/i);
+  });
+
+  it("takes KINETICA_STATS_HOST from env without asking", async () => {
+    process.env.KINETICA_STATS_HOST = "http://statshost";
+    mockInput.mockResolvedValueOnce("http://host1:9191").mockResolvedValueOnce("admin");
+    mockPassword.mockResolvedValue("pass");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+
+    const result = await collectCredentials();
+
+    expect(result.credentials.statsHost).toBe("http://statshost");
+    expect(result.prompted.has("statsHost")).toBe(false);
+    expect(mockInput).toHaveBeenCalledTimes(2);
+  });
+
+  it("never asks in a non-interactive terminal", async () => {
+    mockInput.mockResolvedValue("x");
+    mockPassword.mockResolvedValue("pass");
+    // This describe block sets isTTY true in its own setup; override it explicitly.
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    const result = await collectCredentials();
+    expect(result.credentials.statsHost).toBeUndefined();
+    expect(result.prompted.has("statsHost")).toBe(false);
   });
 
   it("does not show confirmation when only URL is in env", async () => {

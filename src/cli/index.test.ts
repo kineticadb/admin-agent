@@ -74,6 +74,20 @@ vi.mock("../session/verify.js", () => ({
   }),
 }));
 
+// Mock observability setup BEFORE importing main — vi.mock is hoisted.
+// Isolation, not just convenience: the real setupObservability probes the session's host
+// on 9090/9080, so without this the unit suite makes live connection attempts against the
+// developer's own machine — and 9090 is a contested port (Cockpit, Grafana, a dev
+// Prometheus), so the result would depend on what happens to be running.
+const { mockSetupObservability } = vi.hoisted(() => ({
+  mockSetupObservability: vi
+    .fn()
+    .mockResolvedValue({ client: undefined, line: "Observability: none detected" }),
+}));
+vi.mock("./observability-setup.js", () => ({
+  setupObservability: mockSetupObservability,
+}));
+
 // Mock runAgent BEFORE importing main — vi.mock is hoisted.
 // SUPPORTED_MODELS and DEFAULT_AGENT_MODEL must be re-exported from the mock
 // because the CLI imports them eagerly at module load (help text, --model
@@ -108,6 +122,12 @@ describe("main", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears CALLS but not implementations, so a mockResolvedValue set in
+    // one test would otherwise leak into the next. Restore the default explicitly.
+    mockSetupObservability.mockResolvedValue({
+      client: undefined,
+      line: "Observability: none detected",
+    });
 
     // Store and reset argv to prevent --help/--version flags from affecting tests
     originalArgv = process.argv;
@@ -141,6 +161,35 @@ describe("main", () => {
     process.argv = originalArgv;
     Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
     vi.restoreAllMocks();
+  });
+
+  it("threads the collected stats host into observability setup", async () => {
+    (connectWithRetry as ReturnType<typeof vi.fn>).mockResolvedValue({
+      session: { baseUrl: "http://localhost:9191", makeRequest: vi.fn() },
+      kineticaVersion: "7.2.3.11",
+      degraded: false,
+      statsHost: "http://statshost",
+    });
+
+    await main();
+
+    expect(mockSetupObservability).toHaveBeenCalledWith(
+      expect.objectContaining({ statsHost: "http://statshost" }),
+    );
+  });
+
+  it("passes the discovered observability client to runAgent", async () => {
+    const client = { promUrl: "http://statshost:9090" };
+    mockSetupObservability.mockResolvedValue({ client, line: "Observability: Prometheus" });
+
+    await main();
+
+    // Assert on the options argument directly: expect.anything() does not match
+    // undefined, and the model argument legitimately is undefined here.
+    const options = (runAgent as ReturnType<typeof vi.fn>).mock.calls[0][4] as {
+      observability?: unknown;
+    };
+    expect(options.observability).toBe(client);
   });
 
   it("calls connectWithRetry after banner when no flags are provided", async () => {

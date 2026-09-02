@@ -82,6 +82,9 @@ ANTHROPIC_API_KEY=
 KINETICA_URL={url}
 KINETICA_USER={user}
 KINETICA_PASS=
+
+# Prometheus/Loki host for metrics tools (optional, prompted at startup)
+KINETICA_STATS_HOST={statsHost}
 `;
 
 /**
@@ -95,12 +98,20 @@ KINETICA_PASS=
  *
  * Pure function — no I/O, no side effects.
  */
-export function buildEnvContent(url: string, user: string, existingContent?: string): string {
+export function buildEnvContent(
+  url: string,
+  user: string,
+  existingContent?: string,
+  statsHost?: string,
+): string {
   const safeUrl = escapeEnvValue(url);
   const safeUser = escapeEnvValue(user);
+  const safeStats = statsHost === undefined ? "" : escapeEnvValue(statsHost);
 
   if (!existingContent?.trim()) {
-    return ENV_TEMPLATE.replace("{url}", safeUrl).replace("{user}", safeUser);
+    return ENV_TEMPLATE.replace("{url}", safeUrl)
+      .replace("{user}", safeUser)
+      .replace("{statsHost}", safeStats);
   }
 
   const lines = existingContent.split("\n");
@@ -122,7 +133,39 @@ export function buildEnvContent(url: string, user: string, existingContent?: str
   if (!urlReplaced) updated.push(`KINETICA_URL=${safeUrl}`);
   if (!userReplaced) updated.push(`KINETICA_USER=${safeUser}`);
 
-  return updated.join("\n");
+  const withHosts = updated.join("\n");
+  // Only written when the operator actually supplied one; upsertEnvValue keeps an
+  // existing entry in place so surrounding comments stay meaningful.
+  return statsHost === undefined
+    ? withHosts
+    : upsertEnvValue(withHosts, "KINETICA_STATS_HOST", statsHost);
+}
+
+/**
+ * Insert or replace a single `KEY=value` line in .env content.
+ *
+ * Deliberately separate from buildEnvContent(), which owns the initial URL/USER template.
+ * This one edits in place: an existing key keeps its position (so comments around it stay
+ * meaningful) and a new key is appended. Pure; never throws.
+ */
+export function upsertEnvValue(
+  existingContent: string | undefined,
+  key: string,
+  value: string,
+): string {
+  const line = `${key}=${escapeEnvValue(value)}`;
+  const content = existingContent ?? "";
+  if (!content.trim()) return `${line}\n`;
+
+  const lines = content.split("\n");
+  const matcher = new RegExp(`^${key}=`);
+  const replaced = lines.map((l) => (matcher.exec(l) ? line : l));
+  if (replaced.some((l) => l === line)) return replaced.join("\n");
+
+  // Append, keeping exactly one trailing newline.
+  const trimmed = [...replaced];
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === "") trimmed.pop();
+  return [...trimmed, line, ""].join("\n");
 }
 
 /**
@@ -153,12 +196,18 @@ export function loadEnvFile(dir?: string, env: NodeJS.ProcessEnv = process.env):
  *
  * Skips silently in non-interactive terminals. Never throws.
  */
-export async function offerSaveCredentials(url: string, user: string, dir?: string): Promise<void> {
+export async function offerSaveCredentials(
+  url: string,
+  user: string,
+  dir?: string,
+  statsHost?: string,
+): Promise<void> {
   if (!process.stdin.isTTY) return;
 
   try {
+    const what = statsHost === undefined ? "" : " and KINETICA_STATS_HOST";
     const shouldSave = await confirm({
-      message: "Save KINETICA_URL and KINETICA_USER to .env? (password is never saved)",
+      message: `Save KINETICA_URL, KINETICA_USER${what} to .env? (password is never saved)`,
       default: true,
     });
 
@@ -172,7 +221,7 @@ export async function offerSaveCredentials(url: string, user: string, dir?: stri
       // File doesn't exist yet — will create from template
     }
 
-    const content = buildEnvContent(url, user, existing);
+    const content = buildEnvContent(url, user, existing, statsHost);
     await writeFile(filePath, content, "utf8");
     console.error(pc.dim("Saved to .env"));
   } catch (err) {

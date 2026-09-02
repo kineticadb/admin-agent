@@ -7,6 +7,7 @@ import { logout } from "../auth/logout.js";
 import { loadEnvFile } from "../session/env-file.js";
 import { connectWithRetry, connectBestEffort } from "../session/verify.js";
 import { verifyBundle } from "../bundle/verify-bundle.js";
+import { setupObservability } from "./observability-setup.js";
 import { runAgent, SUPPORTED_MODELS, DEFAULT_AGENT_MODEL } from "../agent/run-agent.js";
 import type { AgentModel } from "../agent/run-agent.js";
 import { resolveMaxBudgetUsd, isValidBudget } from "../agent/session-budget.js";
@@ -236,6 +237,16 @@ export async function main(): Promise<void> {
       );
     }
 
+    // Observability is worth resolving even here: the stats stack runs on a different
+    // host from the database, so it is frequently still up (and still holding the
+    // incident's metrics) when the cluster that produced this bundle is not.
+    const obs = await setupObservability({
+      session: live?.session,
+      bundleSource: result.bundleSource,
+      statsHost: live?.statsHost,
+    });
+    process.stderr.write(pc.dim(`${obs.line}\n`));
+
     // connectBestEffort never enters degraded mode (it only attaches when the DB
     // engine on 9191 answers), so degraded is always false here.
     await runAgent(
@@ -247,16 +258,29 @@ export async function main(): Promise<void> {
         authMethod: authResult.method,
         maxBudgetUsd,
         bundleSource: result.bundleSource,
+        observability: obs.client,
       },
     );
     return;
   }
 
-  const { session: connectedSession, kineticaVersion, degraded } = await connectWithRetry();
+  const {
+    session: connectedSession,
+    kineticaVersion,
+    degraded,
+    statsHost,
+  } = await connectWithRetry();
   session = connectedSession;
+
+  // Best-effort, never blocking: a cluster without a stats stack starts exactly as before.
+  // statsHost is whatever the operator entered right after the password.
+  const observability = await setupObservability({ session, statsHost });
+  process.stderr.write(pc.dim(`${observability.line}\n`));
+
   await runAgent(session, kineticaVersion, degraded, model, {
     authMethod: authResult.method,
     maxBudgetUsd,
+    observability: observability.client,
   });
 }
 

@@ -59,9 +59,10 @@ function makeCollectResult(
   url = "http://kinetica:9191",
   user = "admin",
   pass = "secret",
-  prompted: ReadonlySet<"url" | "user"> = new Set(),
+  prompted: ReadonlySet<"url" | "user" | "statsHost"> = new Set(),
+  statsHost?: string,
 ) {
-  return { credentials: { url, user, pass }, prompted };
+  return { credentials: { url, user, pass, statsHost }, prompted };
 }
 
 /** Build a /show/system/status response body with optional version. */
@@ -297,6 +298,52 @@ describe("connectWithRetry", () => {
   });
 
   // -------------------------------------------------------------------------
+  describe("stats host threading", () => {
+    it("returns the collected stats host on the connect result", async () => {
+      mockCreateSession.mockReturnValue(makeSession());
+      mockCollectCredentials.mockResolvedValue(
+        makeCollectResult("http://kinetica:9191", "admin", "secret", new Set(), "http://statshost"),
+      );
+
+      const result = await connectWithRetry();
+
+      expect(result.statsHost).toBe("http://statshost");
+    });
+
+    it("passes it to offerSaveCredentials so it lands in .env with the rest", async () => {
+      mockCreateSession.mockReturnValue(makeSession());
+      mockCollectCredentials.mockResolvedValue(
+        makeCollectResult(
+          "http://kinetica:9191",
+          "admin",
+          "secret",
+          new Set(["statsHost"]),
+          "http://statshost",
+        ),
+      );
+
+      await connectWithRetry();
+
+      expect(mockOfferSave).toHaveBeenCalledWith(
+        "http://kinetica:9191",
+        "admin",
+        undefined,
+        "http://statshost",
+      );
+    });
+
+    it("is undefined when the operator skipped the question", async () => {
+      mockCreateSession.mockReturnValue(makeSession());
+      mockCollectCredentials.mockResolvedValue(
+        makeCollectResult("http://kinetica:9191", "admin", "secret", new Set(["url"])),
+      );
+
+      const result = await connectWithRetry();
+
+      expect(result.statsHost).toBeUndefined();
+    });
+  });
+
   // offerSaveCredentials integration
   // -------------------------------------------------------------------------
 
@@ -310,7 +357,12 @@ describe("connectWithRetry", () => {
     await connectWithRetry();
 
     expect(mockOfferSave).toHaveBeenCalledOnce();
-    expect(mockOfferSave).toHaveBeenCalledWith("http://prompted:9191", "admin");
+    expect(mockOfferSave).toHaveBeenCalledWith(
+      "http://prompted:9191",
+      "admin",
+      undefined,
+      undefined,
+    );
   });
 
   it("offers to save when user was prompted", async () => {
@@ -323,7 +375,12 @@ describe("connectWithRetry", () => {
     await connectWithRetry();
 
     expect(mockOfferSave).toHaveBeenCalledOnce();
-    expect(mockOfferSave).toHaveBeenCalledWith("http://kinetica:9191", "prompted-user");
+    expect(mockOfferSave).toHaveBeenCalledWith(
+      "http://kinetica:9191",
+      "prompted-user",
+      undefined,
+      undefined,
+    );
   });
 
   it("does not offer to save when nothing was prompted", async () => {
@@ -351,7 +408,12 @@ describe("connectWithRetry", () => {
     await connectWithRetry();
 
     expect(mockOfferSave).toHaveBeenCalledOnce();
-    expect(mockOfferSave).toHaveBeenCalledWith("http://prompted:9191", "admin");
+    expect(mockOfferSave).toHaveBeenCalledWith(
+      "http://prompted:9191",
+      "admin",
+      undefined,
+      undefined,
+    );
   });
 
   it("does not offer to save in degraded mode when nothing was prompted", async () => {
@@ -394,7 +456,12 @@ describe("connectWithRetry", () => {
 
     await connectWithRetry();
 
-    expect(mockOfferSave).toHaveBeenCalledWith("https://resolved:9191", "admin");
+    expect(mockOfferSave).toHaveBeenCalledWith(
+      "https://resolved:9191",
+      "admin",
+      undefined,
+      undefined,
+    );
   });
 
   it("passes resolved URL to offerSaveCredentials in degraded mode", async () => {
@@ -412,7 +479,12 @@ describe("connectWithRetry", () => {
 
     await connectWithRetry();
 
-    expect(mockOfferSave).toHaveBeenCalledWith("https://resolved:9191", "admin");
+    expect(mockOfferSave).toHaveBeenCalledWith(
+      "https://resolved:9191",
+      "admin",
+      undefined,
+      undefined,
+    );
   });
 
   it("exits with code 1 when resolveUrl returns ok:false", async () => {
@@ -660,7 +732,12 @@ describe("connectWithRetry — credential re-prompt", () => {
     await connectWithRetry();
 
     // Should offer save with the new username (wasReprompted = true)
-    expect(mockOfferSave).toHaveBeenCalledWith("http://kinetica:9191", "new-admin");
+    expect(mockOfferSave).toHaveBeenCalledWith(
+      "http://kinetica:9191",
+      "new-admin",
+      undefined,
+      undefined,
+    );
   });
 
   it("does not treat 500 as credential error — retries normally", async () => {
