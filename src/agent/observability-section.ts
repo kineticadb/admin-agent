@@ -40,7 +40,17 @@ function promTraps(): string {
 /** What Loki actually holds. Loki-only. */
 function lokiTraps(): string {
   return `
-**Loki holds events, not log lines.** With ${t}enable_promtail${t} at its default of false there are no rank log lines in Loki at all. What is there: ${t}class="sql"${t} (per-statement jobid, user, resource_group, elapsed, full statement), ${t}class="job"${t} (request failures with attribution), ${t}class="status"${t} (rank status transitions), ${t}class="config"${t}, ${t}class="mode"${t}. For stack traces or multi-line SQL text you need a support bundle — those exist only in the rolling logs.`;
+**Loki holds two populations, and ${t}stream${t} picks which.**
+- ${t}stream="events"${t} (the default) — what the database pushes itself: ${t}class="sql"${t} (per-statement jobid, user, resource_group, elapsed, full statement), ${t}class="job"${t} (request failures with attribution), ${t}class="status"${t} (rank status transitions), ${t}class="config"${t}, ${t}class="mode"${t}. Always present.
+- ${t}stream="logs"${t} — real rank log lines, but ONLY when the cluster has ${t}enable_promtail=true${t} (it is off by default, and turning it on in ${t}gpudb.conf${t} does nothing until the stats stack is restarted). When present this also reaches the SQL engine, graph, tomcat and workbench logs via ${t}job${t} — components no other live tool can see.
+
+**Do not conclude "promtail is off" from an empty logs result alone.** Confirm with ${t}stream="events"${t}: events present and logs absent means promtail; both absent means the window or the selector.
+
+**One vocabulary, whichever stream you read.** The two populations label the same things differently (${t}source${t}/${t}severity${t} for events, ${t}app${t}/${t}level${t} for logs, and the rank is spelled ${t}rank0${t} in one and ${t}rank-0${t} in the other). The tool translates, so always pass ${t}source="rank0"${t} — never reach for the raw label names unless you are writing a raw ${t}selector${t}.
+
+**Promtail BACKFILLS on start; events do not.** Events are pushed live, so Loki has them only from the moment the database started emitting. Promtail instead tails the rolling log files from the beginning, so the moment it starts it ships whatever history those files still hold — measured on a live cluster, ~40 hours of log lines appeared instantly, reaching further back than the oldest event. Two consequences: an empty logs window does NOT mean promtail was off then, and enabling promtail during an incident recovers the log history that is still on disk rather than starting from zero.
+
+**Promtail is line-oriented, so multi-line records are split.** A record whose value contains newlines — above all ${t}Executing SQL:${t} — arrives as a parent line plus continuation lines that land in a SEPARATE stream with no ${t}app${t} label and ingest-time timestamps, so they do not reliably pair back up. Report the first line as the first line, never as the whole statement. Complete multi-line SQL and contiguous stack traces exist only in a support bundle's rolling logs.`;
 }
 
 /**
@@ -60,7 +70,7 @@ export function buildObservabilitySection(
   const available = [...(hasProm ? PROM_TOOLS : []), ...(hasLoki ? LOKI_TOOLS : [])];
   const services = [
     hasProm ? "**Prometheus** (metrics over time)" : "",
-    hasLoki ? "**Loki** (structured events)" : "",
+    hasLoki ? "**Loki** (structured events, plus rank log lines when promtail is on)" : "",
   ]
     .filter(Boolean)
     .join(" and ");
@@ -83,7 +93,7 @@ ${framing}
 
 ${buildObservabilityEvidenceChecklist(available)}
 
-**Ask the retention question first.** Every source here has a horizon: Loki keeps hours to days with no backfill; ${t}ki_query_history${t} is trimmed; the rolling logs hold roughly two weeks but live only in a support bundle. Before planning an investigation into something that happened N days ago, establish whether any source still has it. Proposing a search that cannot succeed wastes the operator's time.
+**Ask the retention question first.** Every source here has a horizon: Loki keeps hours to days; ${t}ki_query_history${t} is trimmed; the rolling logs hold roughly two weeks but live only in a support bundle. Before planning an investigation into something that happened N days ago, establish whether any source still has it. Proposing a search that cannot succeed wastes the operator's time.
 ${hasProm ? promTraps() : ""}${hasLoki ? lokiTraps() : ""}
 
 ${firstMove}`;

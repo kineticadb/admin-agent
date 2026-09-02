@@ -178,11 +178,14 @@ describe("lokiQuery", () => {
   });
 
   describe("selector construction", () => {
-    it("defaults to every stream when nothing is specified", async () => {
+    it("defaults to every EVENT stream when nothing is specified", async () => {
+      // Was `cluster=~".+"` — correct only while events were the sole occupants of Loki.
+      // With promtail enabled that also matches rank log lines, which outnumber events by
+      // orders of magnitude and would consume the whole limit. See stream=all to opt in.
       const client = clientFor([]);
       await lokiQuery(client, {});
       const [selector] = (client.lokiRange as ReturnType<typeof vi.fn>).mock.calls[0];
-      expect(selector).toContain("cluster=~");
+      expect(selector).toBe('{cluster=~".+",job=""}');
     });
 
     it("builds a selector from the class and severity conveniences", async () => {
@@ -255,6 +258,174 @@ describe("lokiQuery", () => {
       } as unknown as ObservabilityClient;
       const r = await lokiQuery(client, {});
       expect(r.ok).toBe(false);
+    });
+  });
+});
+
+// --- promtail (enable_promtail=true) -------------------------------------------------
+// Label schema and body shape measured against a live 7.2.3.20 kagent cluster after
+// enabling promtail. Promtail streams share cluster/host/ring with the event streams and
+// add app/filename/job/level; bodies are plain-text core-dialect log lines.
+
+const RANK_LOG_LABELS = {
+  app: "rank-0",
+  cluster: "dev-cluster",
+  filename: "/opt/gpudb/core/logs/gpudb-rolling-r0.log",
+  host: "node2",
+  job: "gpudb_log",
+  level: "info",
+  ring: "default",
+};
+
+/** Verbatim shape of a promtail-shipped rank log line. */
+const RANK_LOG_LINE =
+  "2026-09-02 18:24:04.792 INFO  (204732,206427,r0/gpudb_ep_6     ) node2 " +
+  "Endpoint/Endpoint.cpp:277 - JobId:96; Request URI: /execute/sql completed in 0.07464 s bytes: 172";
+
+const logStream = {
+  stream: RANK_LOG_LABELS,
+  values: [["1788373444792000000", RANK_LOG_LINE]],
+};
+
+function selectorOf(client: ObservabilityClient): string {
+  return (client.lokiRange as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+}
+
+describe("promtail log lines", () => {
+  describe("renderEntry", () => {
+    it("strips the timestamp/pid boilerplate from a core-dialect log line", () => {
+      const rendered = renderEntry(RANK_LOG_LINE);
+      // time and severity already have their own columns; the pid/tid tuple is noise.
+      expect(rendered).not.toContain("2026-09-02 18:24:04.792");
+      expect(rendered).not.toContain("(204732,206427");
+      // the source location is diagnostic gold and must survive
+      expect(rendered).toContain("Endpoint/Endpoint.cpp:277");
+      expect(rendered).toContain("JobId:96");
+    });
+
+    it("still passes a line that is not a Kinetica log record straight through", () => {
+      expect(renderEntry("LIMIT 20")).toBe("LIMIT 20");
+    });
+  });
+
+  describe("stream selection", () => {
+    it("defaults to events only, so log lines cannot bury them", async () => {
+      // Measured: ~60k log lines/hour against a few hundred events over days. A
+      // cluster-wide match would spend the whole limit on log lines.
+      const client = clientFor([]);
+      await lokiQuery(client, {});
+      expect(selectorOf(client)).toBe('{cluster=~".+",job=""}');
+    });
+
+    it("defines events by EXCLUDING promtail, not by requiring a class label", async () => {
+      // On a cluster that never ran promtail no stream carries `job`, so this base is
+      // identical to the pre-promtail default `{cluster=~".+"}` BY CONSTRUCTION — the
+      // back-compat guarantee needs no measurement of any particular cluster. Requiring
+      // `class=~".+"` instead would silently drop any event stream that lacked the label.
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "events" });
+      const selector = selectorOf(client);
+      expect(selector).toContain('cluster=~".+"');
+      expect(selector).toContain('job=""');
+      expect(selector).not.toContain("class=");
+    });
+
+    it("selects promtail streams for stream=logs", async () => {
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "logs" });
+      expect(selectorOf(client)).toContain('job=~".+"');
+    });
+
+    it("selects both for stream=all", async () => {
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "all" });
+      expect(selectorOf(client)).toContain('cluster=~".+"');
+    });
+  });
+
+  describe("label vocabulary translation", () => {
+    it("maps source to the hyphenated app label for logs", async () => {
+      // Events say source="rank0"; promtail says app="rank-0". Same rank, two spellings.
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "logs", source: "rank0" });
+      expect(selectorOf(client)).toContain('app="rank-0"');
+    });
+
+    it("maps the host manager, which drops its ordinal in the app label", async () => {
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "logs", source: "hostmanager0" });
+      expect(selectorOf(client)).toContain('app="hostmanager"');
+    });
+
+    it("leaves an already-hyphenated app name alone", async () => {
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "logs", source: "graph-0" });
+      expect(selectorOf(client)).toContain('app="graph-0"');
+    });
+
+    it("maps severity to the level label for logs, lowercased", async () => {
+      // level values are info|warn|error|uerr; an agent reading log text sees "ERROR".
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "logs", severity: "ERROR" });
+      expect(selectorOf(client)).toContain('level="error"');
+      expect(selectorOf(client)).not.toContain("severity=");
+    });
+
+    it("keeps the severity label for events", async () => {
+      const client = clientFor([]);
+      await lokiQuery(client, { severity: "uerr" });
+      expect(selectorOf(client)).toContain('severity="uerr"');
+      expect(selectorOf(client)).not.toContain("level=");
+    });
+
+    it("filters by job, the only route to the sql/graph/tomcat logs", async () => {
+      const client = clientFor([]);
+      await lokiQuery(client, { stream: "logs", job: "gpudb_sql_log" });
+      expect(selectorOf(client)).toContain('job="gpudb_sql_log"');
+    });
+  });
+
+  describe("row shape", () => {
+    it("fills source from app, severity from level, and carries job", async () => {
+      const r = await lokiQuery(clientFor([logStream]), { stream: "logs" });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.data.entries[0]).toMatchObject({
+        source: "rank-0",
+        severity: "info",
+        job: "gpudb_log",
+        class: "",
+      });
+    });
+
+    it("leaves job blank on an event row, so the two kinds stay distinguishable", async () => {
+      const r = await lokiQuery(clientFor([{ stream: JOB_LABELS, values: [["1", LOG_BODY]] }]), {});
+      if (!r.ok) return;
+      expect(r.data.entries[0].job).toBe("");
+      expect(r.data.entries[0].class).toBe("job");
+    });
+  });
+
+  describe("empty results", () => {
+    it("does not blame promtail for an empty stream=all result", async () => {
+      // An "all" query matches events too, so emptiness says nothing about promtail —
+      // a mistyped `contains` is at least as likely. Naming promtail here would send
+      // the agent chasing a configuration problem that does not exist.
+      const r = await lokiQuery(clientFor([]), { stream: "all", contains: "nope" });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.note).not.toMatch(/enable_promtail/i);
+      expect(r.note).toMatch(/selector|window|widen/i);
+    });
+
+    it("names the promtail prerequisite when a logs query finds nothing", async () => {
+      // Measured: enable_promtail is written to gpudb.conf but the running process does
+      // not re-read it — the stats stack must be restarted before anything ships.
+      const r = await lokiQuery(clientFor([]), { stream: "logs" });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.note).toMatch(/enable_promtail/i);
+      expect(r.note).toMatch(/restart/i);
     });
   });
 });
