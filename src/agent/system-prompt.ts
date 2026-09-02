@@ -20,6 +20,8 @@ import type { CatalogSchemas } from "./discover-schemas.js";
 import type { Playbook, Reference } from "../types/index.js";
 import { BUILDER_REGISTRY } from "./diagnostic-sql.js";
 import { buildEvidenceChecklist } from "../tools/catalog.js";
+import { buildObservabilitySection } from "./observability-section.js";
+import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
 import { REPORT_TEMPLATE } from "./report-template.js";
 
@@ -94,6 +96,7 @@ export function buildSystemPrompt(
   degraded?: boolean,
   bundleCapability?: "attached" | "available",
   bundleReferences?: readonly Reference[],
+  observability?: ObservabilityClient,
 ): string {
   const versionSection = kineticaVersion
     ? `**Kinetica Version:** ${kineticaVersion} (provided at session start)`
@@ -158,6 +161,10 @@ ${
     ? `\n${buildReferenceSection(bundleReferences)}\n`
     : ""
 }`;
+
+  // Injected ONLY when an endpoint was actually reached, and gated per service inside —
+  // advertising a Prometheus tool on a Loki-only stack costs the agent a wasted turn.
+  const observabilitySection = buildObservabilitySection(observability, "live");
 
   return (
     `You are an expert Kinetica GPU database administrator and diagnostician with deep knowledge of Kinetica's internals, system tables, REST API, and common failure patterns. Your job is to autonomously investigate database issues reported by operators, gather diagnostic evidence, reason over that evidence to identify root causes, and produce a structured diagnostic report with actionable remediation steps.
@@ -290,6 +297,7 @@ ${buildFailurePatternsSection(playbooks)}
 
 ${buildReferenceSection(references)}
 ${bundleSection}
+${observabilitySection}
 ---
 
 ## Analysis Instructions

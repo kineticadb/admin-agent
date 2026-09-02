@@ -25,6 +25,8 @@
 import type { Playbook, Reference } from "../types/index.js";
 import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
 import { buildBundleEvidenceChecklist } from "../tools/bundle/catalog.js";
+import { buildObservabilitySection } from "./observability-section.js";
+import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { REPORT_TEMPLATE } from "./report-template.js";
 
 export function buildBundleSystemPrompt(
@@ -32,8 +34,15 @@ export function buildBundleSystemPrompt(
   playbooks?: readonly Playbook[],
   references?: readonly Reference[],
   bundleReferences?: readonly Reference[],
+  observability?: ObservabilityClient,
 ): string {
   const t = "`";
+
+  // The stats stack runs on a different host from the database, so it is frequently
+  // still up when the cluster that produced this bundle is not — and it holds metrics
+  // and events from the incident itself. Without this the tools are registered and
+  // discovery has already run, but the agent is never told they exist.
+  const observabilitySection = buildObservabilitySection(observability, "bundle");
 
   const versionSection = kineticaVersion
     ? `**Kinetica Version:** ${kineticaVersion} (detected from the bundle's gpudb.txt / gpudb.conf)`
@@ -91,6 +100,7 @@ Issue independent reads together where possible (e.g. timeline + list_files, or 
 ## Evidence Checklist — Bundle Tools
 
 ${buildBundleEvidenceChecklist()}
+${observabilitySection}
 
 ---
 

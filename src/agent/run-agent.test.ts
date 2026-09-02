@@ -106,6 +106,34 @@ const { MOCK_BUNDLE_TOOL_NAMES } = vi.hoisted(() => ({
   ] as const,
 }));
 
+const { MOCK_OBSERVABILITY_TOOL_NAMES } = vi.hoisted(() => ({
+  MOCK_OBSERVABILITY_TOOL_NAMES: [
+    "kinetica_tier_snapshot",
+    "kinetica_prom_query",
+    "kinetica_loki_query",
+  ] as const,
+}));
+
+vi.mock("../tools/observability/index.js", () => {
+  // Chainable stub, matching the bundle registry mock: run-agent now composes the
+  // exported factories rather than re-implementing their registration rules.
+  const makeRegistry = () => {
+    const reg = {
+      isReadOnlyTool: vi.fn().mockReturnValue(true),
+      registerReadOnlyTool: vi.fn(() => reg),
+      tools: new Set<string>(MOCK_OBSERVABILITY_TOOL_NAMES),
+    };
+    return reg;
+  };
+  return {
+    OBSERVABILITY_TOOL_NAMES: MOCK_OBSERVABILITY_TOOL_NAMES,
+    makeObservabilityTools: vi
+      .fn()
+      .mockReturnValue(MOCK_OBSERVABILITY_TOOL_NAMES.map((name: string) => ({ name }))),
+    createObservabilityRegistry: vi.fn(() => makeRegistry()),
+  };
+});
+
 vi.mock("../tools/bundle/index.js", () => {
   // Chainable read-only registry stub: registerReadOnlyTool returns itself so the
   // union-registry build in run-agent (createBundleRegistry().reduce(...)) works.
@@ -166,6 +194,7 @@ import { loadBundleReferences } from "./load-references.js";
 import { discoverCatalogSchemas } from "./discover-schemas.js";
 import { makeDiagnosticTools, makeMutationTools, DIAGNOSTIC_TOOL_NAMES } from "../tools/index.js";
 import { createBundleRegistry } from "../tools/bundle/index.js";
+import { createObservabilityRegistry } from "../tools/observability/index.js";
 import { makeSaveReportTool } from "../report/save-report.js";
 import { createApprovalGate } from "../approval/gate.js";
 
@@ -305,7 +334,7 @@ describe("explicit allowedTools", () => {
 
     const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
     // Should have 15 diagnostic + 1 save_report + 1 alter_table_columns = 17 entries
-    expect(options.allowedTools).toHaveLength(23); // 15 diagnostic + save_report + alter_table_columns + 6 bundle tools
+    expect(options.allowedTools).toHaveLength(26); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 3 observability
     // All diagnostic tools must be prefixed with MCP server name
     for (const name of DIAGNOSTIC_TOOL_NAMES) {
       expect(options.allowedTools).toContain(`mcp__kinetica-diagnostics__${name}`);
@@ -459,7 +488,9 @@ describe("offline bundle mode", () => {
       "mcp__kinetica-diagnostics__kinetica_bundle_search_logs",
     );
     expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__save_report");
-    expect(options.allowedTools).toHaveLength(7); // 6 bundle tools + save_report
+    expect(options.allowedTools).toHaveLength(10); // 6 bundle + save_report + 3 observability
+    // Observability tools are present in bundle-only mode on purpose: the stats stack
+    // runs on a different host, so it commonly outlives the cluster the bundle came from.
     // No live diagnostic or mutation tools
     expect(options.allowedTools).not.toContain("mcp__kinetica-diagnostics__kinetica_health_check");
     expect(options.allowedTools).not.toContain(
@@ -522,6 +553,7 @@ describe("offline bundle mode", () => {
       false,
       "attached",
       [],
+      undefined,
     );
   });
 });
@@ -1060,7 +1092,7 @@ describe("runAgent", () => {
     expect(callArgs.name).toBe("kinetica-diagnostics");
   });
 
-  it("creates MCP server with 26 tools (19 live + 6 bundle + save_report)", async () => {
+  it("creates MCP server with 29 tools (19 live + 6 bundle + 3 observability + save_report)", async () => {
     const session = makeSession();
     await runAgent(session);
     const callArgs = mockCreateSdkMcpServer.mock.calls[0][0] as {
@@ -1068,7 +1100,7 @@ describe("runAgent", () => {
       version: string;
       tools: unknown[];
     };
-    expect(callArgs.tools).toHaveLength(26);
+    expect(callArgs.tools).toHaveLength(29);
   });
 
   it("calls makeMutationTools with the session", async () => {
@@ -1117,6 +1149,7 @@ describe("runAgent", () => {
       undefined,
       "available",
       [],
+      undefined,
     );
   });
 
@@ -1132,6 +1165,7 @@ describe("runAgent", () => {
       undefined,
       "available",
       [],
+      undefined,
     );
   });
 
@@ -1146,6 +1180,7 @@ describe("runAgent", () => {
       undefined,
       "available",
       [],
+      undefined,
     );
   });
 
@@ -1161,6 +1196,7 @@ describe("runAgent", () => {
       true,
       "available",
       [],
+      undefined,
     );
   });
 
@@ -1213,9 +1249,10 @@ describe("runAgent", () => {
   it("builds the approval registry (bundle base + diagnostic read-only names) and wires the gate", async () => {
     const session = makeSession();
     await runAgent(session);
-    // The union registry starts from createBundleRegistry() and adds the diagnostic
+    // The union registry composes BOTH exported factories (bundle + observability) the diagnostic
     // read-only names; createApprovalGate wraps its isReadOnlyTool.
     expect(createBundleRegistry).toHaveBeenCalledOnce();
+    expect(createObservabilityRegistry).toHaveBeenCalledOnce();
     expect(createApprovalGate).toHaveBeenCalledOnce();
   });
 
@@ -1224,7 +1261,7 @@ describe("runAgent", () => {
     await runAgent(session);
     const options = mockQuery.mock.calls[0][0].options as { allowedTools: string[] };
     // 15 diagnostic + 1 save_report + 1 alter_table_columns = 17, no wildcards
-    expect(options.allowedTools).toHaveLength(23); // 15 diagnostic + save_report + alter_table_columns + 6 bundle tools
+    expect(options.allowedTools).toHaveLength(26); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 3 observability
     expect(options.allowedTools.some((t: string) => t.includes("*"))).toBe(false);
     expect(options.allowedTools.some((t: string) => t.includes("mutation"))).toBe(false);
   });

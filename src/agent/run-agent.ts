@@ -52,7 +52,14 @@ import {
 import { makeSaveReportTool } from "../report/save-report.js";
 import { buildBundleSystemPrompt } from "./bundle-system-prompt.js";
 import { makeBundleTools, createBundleRegistry, BUNDLE_TOOL_NAMES } from "../tools/bundle/index.js";
+import {
+  makeObservabilityTools,
+  createObservabilityRegistry,
+  OBSERVABILITY_TOOL_NAMES,
+} from "../tools/observability/index.js";
+import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { createBundleHolder } from "../bundle/bundle-holder.js";
+import { createRegistry } from "../approval/registry.js";
 import { promptBundleDirectory } from "../cli/pick-bundle-path.js";
 import type { BundleSource } from "../bundle/BundleSource.js";
 import { createApprovalGate } from "../approval/gate.js";
@@ -173,6 +180,14 @@ export type RunAgentOptions = {
    * a bundle can also be attached later at runtime via the kinetica_load_bundle tool.
    */
   readonly bundleSource?: BundleSource;
+  /**
+   * Prometheus/Loki access for this cluster. Composable with everything else, and
+   * deliberately available in bundle-only sessions too: the stats stack runs on a
+   * DIFFERENT host from the database (measured on a live 7.2.3.20 cluster),
+   * so it survives the database being down and still holds the incident's metrics when
+   * a post-mortem is the reason a bundle exists at all.
+   */
+  readonly observability?: ObservabilityClient;
 };
 
 /** Turn limits per mode. Bundle investigations are bounded (no mutation/verify rounds). */
@@ -204,6 +219,14 @@ export const BUNDLE_ALLOWED_TOOL_NAMES = [
   ...BUNDLE_TOOL_NAMES.map((name) => `mcp__${MCP_SERVER_NAME}__${name}`),
   SAVE_REPORT_TOOL_NAME,
 ];
+
+/**
+ * Allow-list for the observability tools. All three are unauthenticated HTTP GETs
+ * against read-only APIs, so they bypass the approval gate like the diagnostic tools.
+ */
+export const OBSERVABILITY_ALLOWED_TOOL_NAMES = OBSERVABILITY_TOOL_NAMES.map(
+  (name) => `mcp__${MCP_SERVER_NAME}__${name}`,
+);
 
 /**
  * Explicit deny list — built-in tools the diagnostic agent should never use.
@@ -435,8 +458,15 @@ export async function runAgent(
         degraded,
         bundleHolder.isLoaded() ? "attached" : "available",
         bundleReferences,
+        runOptions?.observability,
       )
-    : buildBundleSystemPrompt(kineticaVersion, playbooks, references, bundleReferences);
+    : buildBundleSystemPrompt(
+        kineticaVersion,
+        playbooks,
+        references,
+        bundleReferences,
+        runOptions?.observability,
+      );
 
   // Token-budget tripwire: the whole knowledge corpus is front-loaded into the
   // system prompt, so its cost grows with the corpus. Surface the size (DEBUG only)
@@ -497,6 +527,10 @@ export async function runAgent(
   // Read-only BY CONSTRUCTION: mutation tools are created only in a live session,
   // and never in a bundle-only one.
   const bundleTools = makeBundleTools(bundleHolder, { promptForPath, confirmPath });
+  // Registered unconditionally: the SDK fixes the tool set at query() creation, so a
+  // conditionally registered tool could never appear. Without a client they return a
+  // failure naming KINETICA_STATS_HOST.
+  const observabilityTools = makeObservabilityTools(runOptions?.observability);
   const liveTools = session
     ? [
         ...makeDiagnosticTools(session, catalogSchemas),
@@ -504,17 +538,27 @@ export async function runAgent(
         makeAlterTableColumnsToolWithDeps(session),
       ]
     : [];
-  const serverTools = [...liveTools, ...bundleTools, saveReportTool];
+  const serverTools = [...liveTools, ...bundleTools, ...observabilityTools, saveReportTool];
 
   // Allow-list = union (deduped — save_report appears in both base lists). Live
   // mutation tools are intentionally absent so they hit the approval gate.
   const allowedTools = [
-    ...new Set([...(session ? ALLOWED_TOOL_NAMES : []), ...BUNDLE_ALLOWED_TOOL_NAMES]),
+    ...new Set([
+      ...(session ? ALLOWED_TOOL_NAMES : []),
+      ...BUNDLE_ALLOWED_TOOL_NAMES,
+      ...OBSERVABILITY_ALLOWED_TOOL_NAMES,
+    ]),
   ];
 
   // Approval registry: every read-only tool that should bypass the gate. Bundle
   // tools are all read-only; diagnostic tools too (only when a live session exists).
-  let registry = createBundleRegistry();
+  // Compose the exported factories rather than re-implementing either registration rule
+  // here. Reducing one tuple onto the other factory would just move the duplication;
+  // unioning the two factories' own tool sets keeps each rule in exactly one place, so a
+  // tool added later that must NOT be read-only cannot be silently re-approved here.
+  let registry = createRegistry(
+    new Set([...createBundleRegistry().tools, ...createObservabilityRegistry().tools]),
+  );
   if (session) {
     registry = DIAGNOSTIC_TOOL_NAMES.reduce(
       (reg, name) => reg.registerReadOnlyTool(name),
