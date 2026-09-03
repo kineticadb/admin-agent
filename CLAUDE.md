@@ -314,10 +314,10 @@ Wired into `runAgent()` immediately after `buildSystemPrompt()`: a `DEBUG`-gated
 
 | Configuration                                                       | Tokens      |
 | ------------------------------------------------------------------- | ----------- |
-| `bundleCapability` omitted — **not a live-session path**            | ~19,325     |
+| `bundleCapability` omitted — **not a live-session path**            | ~19,711     |
 | `"available"`, no observability (live session, no stats stack)      | **~22,657** |
-| `"available"` + observability (live session, stats stack reachable) | **~24,006** |
-| `"attached"` + observability (bundle attached too)                  | ~23,932     |
+| `"available"` + observability (live session, stats stack reachable) | **~24,854** |
+| `"attached"` + observability (bundle attached too)                  | ~24,780     |
 
 **~22,657 is the real live-session floor** (bundle-only prompt: ~19,599). `runAgent()` always passes `"attached"` or `"available"` when a session exists, so the Support Bundle Capability section (~2,820 tokens) is never absent in practice — earlier baselines that reported ~19,325 measured a code path production never takes, and were therefore under-reporting by ~2.8k. Against the former 20,000 threshold every live session was already over budget. The Observability Capability section adds ~2,197 tokens on top (~1,861 before the logs-are-not-optional guidance landed on 2026-09-03), and renders only when an endpoint was actually reached (~1,833 before the `for`-vs-rule-name guidance was reworded from a universal claim into an instruction, ~1,769 before the live run added it at all, ~1,709 before the zero-rules guidance was corrected to say an empty rule list is UNEXPECTED on a kagent stack, ~1,175 before the site-thresholds block landed with `kinetica_prom_alerts` on 2026-09-02, and ~857 before the Loki section grew to cover promtail log lines the same day). Historic figures (all measured the `undefined` way): ~19,136 on 2026-08-31, before `rank-architecture.md` traded its fixed rank-0 RAM figures for read paths; ~17,201 on 2026-08-10, before the measured config-mechanism section landed in `gpudb-conf.md`; ~15,517 with 10 references before `service-management` was added. Note the system prompt is **cached** by the Agent SDK (built once at startup, re-read on every turn), so corpus token cost is near-zero in practice — `runAgent()` emits a `DEBUG`-gated cache-token line in the session summary (`cacheReadTokens > 0` confirms reuse).
 

@@ -140,6 +140,13 @@ wasting ~28.7 MB as raw storage. Both issues have been remediated.
 2. **Column index created** on `pickup_datetime`
 3. **Manual review recommended** for `cab_type` (cardinality=1)
 
+## Root Cause Analysis
+
+Root cause: the table was created without column properties, so five
+low-cardinality string columns were stored raw. Not a fault — a default. The
+5 columns account for 28.7 MB of the table's 52.97 MB uncompressed footprint
+(`ki_columns`), and DICT encoding is the direct remedy.
+
 ## Evidence Collected
 
 | Finding                  | Source                | Detail                                 |
@@ -148,12 +155,28 @@ wasting ~28.7 MB as raw storage. Both issues have been remediated.
 | store_and_fwd_flag waste | `ki_columns`          | 15.8 MB on disk, cardinality=5, char32 |
 | Combined DICT savings    | `ki_columns`          | 5 columns = 28.7 MB uncompressed       |
 
+## Timeline
+
+None — this was a storage-configuration finding with no time-ordered events to
+establish. (The section is mandatory; when there is a chronology, every row
+names its source and the stamp exactly as observed, on one UTC axis.)
+
+## Evidence Gaps
+
+None. All 11 tool calls returned complete data.
+
 ## Mutations Applied
 
 | Tool                            | Parameters                      | Approval | Verified  |
 | ------------------------------- | ------------------------------- | -------- | --------- |
 | `kinetica_alter_table_columns`  | DICT on 5 columns               | APPROVED | confirmed |
 | `kinetica_execute_mutation_sql` | CREATE INDEX on pickup_datetime | APPROVED | confirmed |
+
+## Post-Remediation Verification
+
+Re-read after both mutations: 5 of 19 columns now report DICT, and
+`ki_catalog.ki_indexes` shows the `pickup_datetime` column index present.
+Uncompressed footprint fell from 52.97 MB to 24.3 MB.
 ```
 
 </details>
@@ -189,7 +212,9 @@ If you enter a URL without a protocol (e.g., `host:9191`), the agent auto-detect
 
 ### Observability (Prometheus / Loki)
 
-When the cluster runs Kinetica's stats stack, the agent gains four extra tools: `kinetica_prom_alerts` (every alert rule this site configured, with its expression — the site's own threshold for "too high" — plus what is firing right now), `kinetica_tier_snapshot` (per-rank storage utilization with an eviction verdict), `kinetica_prom_query` (arbitrary PromQL, including host CPU/memory/disk and per-process OOM scores), and `kinetica_loki_query` (structured database events — per-statement SQL telemetry, request failures, rank status changes).
+When the cluster runs Kinetica's stats stack, the agent gains four extra tools: `kinetica_prom_alerts` (every alert rule this site configured, with its expression — the site's own threshold for "too high" — plus what is firing right now), `kinetica_tier_snapshot` (per-rank storage utilization with an eviction verdict), `kinetica_prom_query` (arbitrary PromQL, including host CPU/memory/disk and per-process OOM scores), and `kinetica_loki_query` (Loki's two populations: the structured events the database pushes about itself, and the actual rank log lines).
+
+**Events are telemetry, not logs.** The event stream carries per-statement SQL telemetry, request failures and rank status changes, but no log line, stack trace or component output. Rank log lines are a separate population that arrives only when the cluster runs promtail (`enable_promtail` in `gpudb.conf`, which does nothing until the stats stack is restarted). So "no error events" is not "the logs are clean", and the agent is instructed to read both. It never infers whether promtail is on: an empty logs result carries a verdict measured from Loki's own label set — shipping, absent, or could-not-verify — because an empty _filtered_ query says nothing about the capability.
 
 Endpoints are discovered automatically from `gpudb.conf`'s `gaia.event_server_address`. **Discovery often needs help**, because a `kagent` install declares an _internal_ address for the stats host and the agent usually runs outside that network. Startup tells you which case you are in:
 
@@ -361,12 +386,12 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 Available when Prometheus/Loki are reachable (see [Observability](#observability-prometheus--loki)). All read-only, unauthenticated HTTP GETs. Metrics are reduced to per-series statistics before reaching the agent — min and max carry the timestamps they occurred at, since when a peak happened is usually the finding.
 
-| Tool                     | Description                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kinetica_prom_alerts`   | Every alerting rule this site configured, with its `expr` (the site's OWN threshold for "too high"), for-duration, severity and health, plus every firing or pending instance with the value that tripped it and its age. Zero rules is reported as the **absence of monitoring**, not health — Kinetica's own `alert_*` thresholds go straight to Alertmanager and are read via `kinetica_cluster_status` |
-| `kinetica_tier_snapshot` | Every rank+tier in one call: used vs limit, windowed peak and when, unevictable bytes, bytes remaining before eviction begins, cumulative evictions, and a verdict (ok / pressure / over high-watermark / uncapped)                                                                                                                                                                                        |
-| `kinetica_prom_query`    | Arbitrary PromQL, summarized. Includes host and process telemetry no other tool can reach — `ki_host_cpu` / `ki_host_mem` / `ki_host_disk` / `ki_host_numa` / `ki_host_swap`, and `ki_exe_mem{what="oom_score"}` per process                                                                                                                                                                               |
-| `kinetica_loki_query`    | Structured database events — `class="sql"` (per-statement jobid, user, resource group, elapsed, full statement text), `job` (request failures with attribution), `status` (rank transitions), `config`, `mode`                                                                                                                                                                                             |
+| Tool                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_prom_alerts`   | Every alerting rule this site configured, with its `expr` (the site's OWN threshold for "too high"), for-duration, severity and health, plus every firing or pending instance with the value that tripped it and its age. Zero rules is reported as the **absence of monitoring**, not health — Kinetica's own `alert_*` thresholds go straight to Alertmanager and are read via `kinetica_cluster_status`                                                                                                                                          |
+| `kinetica_tier_snapshot` | Every rank+tier in one call: used vs limit, windowed peak and when, unevictable bytes, bytes remaining before eviction begins, cumulative evictions, and a verdict (ok / pressure / over high-watermark / uncapped)                                                                                                                                                                                                                                                                                                                                 |
+| `kinetica_prom_query`    | Arbitrary PromQL, summarized. Includes host and process telemetry no other tool can reach — `ki_host_cpu` / `ki_host_mem` / `ki_host_disk` / `ki_host_numa` / `ki_host_swap`, and `ki_exe_mem{what="oom_score"}` per process                                                                                                                                                                                                                                                                                                                        |
+| `kinetica_loki_query`    | Two populations, chosen with `stream`. `stream="events"` (default) is telemetry the database pushes about itself — `class="sql"` (per-statement jobid, user, resource group, elapsed, full statement text), `job` (request failures with attribution), `status` (rank transitions), `config`, `mode`. `stream="logs"` is the actual rank log lines, plus the SQL-engine, graph, tomcat and workbench logs no other live tool can reach. **Events are not logs** — an empty logs result reports a measured promtail verdict rather than an inference |
 
 ### Offline Bundle Analysis (read-only)
 
@@ -459,7 +484,7 @@ References provide domain knowledge (not diagnostic runbooks). Create a `.md` fi
 
 **Playbooks** (6): memory-pressure, gpu-out-of-memory, query-contention, resource-group-exhaustion, stale-rank, config-drift
 
-**References** (10):
+**References** (11):
 
 - `gpudb-conf` — master config file structure, section index, tiered storage semantics
 - `tiered-objects` — `ki_tiered_objects` schema, ID format, diagnostic queries
@@ -525,10 +550,12 @@ Exit codes: `0` pass, `1` assertion failed, `2` harness failure (e.g., missing A
 ```
 src/
   cli/          # Entry point, banner, arg parsing, bundle directory picker
+  auth/         # Anthropic authentication — API key or browser OAuth
   agent/        # Agent loop, system prompts (live + bundle), schema discovery
   session/      # Kinetica connection, credentials, .env management, URL resolution
   bundle/       # Offline support-bundle parsers + BundleSource facade
-  tools/        # 28 MCP tools (rest/, sql/, mutation/, bundle/)
+  observability/ # Prometheus/Loki client and endpoint discovery
+  tools/        # 32 MCP tools (rest/, sql/, mutation/, bundle/, observability/)
   output/       # Formatting, truncation, table alignment
   approval/     # Mutation approval gate and checklist UI
   report/       # Report generation and credential scrubbing
