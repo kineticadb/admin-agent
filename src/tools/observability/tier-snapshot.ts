@@ -22,6 +22,7 @@ import {
   type SeriesSummary,
 } from "../rest/summarize-timeseries.js";
 import { hhmmss, describeWindow } from "./series-rows.js";
+import { readPromBody } from "./response-body.js";
 
 /** Coarse step: this tool needs current + peak, not curve shape. */
 const SNAPSHOT_STEPS = 60;
@@ -197,34 +198,12 @@ export async function tierSnapshot(
   const step = Math.max(10, Math.ceil(windowSeconds / SNAPSHOT_STEPS));
 
   try {
-    const response = await client.promRange(buildSelector(input), start, end, step);
-    const raw = await response.text();
+    const decoded = await readPromBody(
+      await client.promRange(buildSelector(input), start, end, step),
+    );
+    if (!decoded.ok) return decoded;
 
-    let body: unknown;
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      return {
-        ok: false,
-        status: response.status,
-        error: `Prometheus returned a non-JSON body (HTTP ${response.status}).`,
-        raw,
-      };
-    }
-
-    if (!response.ok) {
-      // JSON.parse("null") succeeds, so `body` may be null here.
-      const detail =
-        body !== null && typeof body === "object" ? (body as { error?: string }).error : undefined;
-      return {
-        ok: false,
-        status: response.status,
-        error: detail ?? `Prometheus request failed with HTTP ${response.status}.`,
-        raw,
-      };
-    }
-
-    const series = summarizeSeries(body);
+    const series = summarizeSeries(decoded.body);
     const grouped = groupByRankTier(series);
     const tiers = [...grouped.entries()]
       .map(([key, group]) => toRow(key, group))

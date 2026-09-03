@@ -195,6 +195,28 @@ describe("tierSnapshot", () => {
       expect(r.status).toBe(500);
     });
 
+    it("rejects a 200 that carries a Prometheus error envelope", async () => {
+      // Before the shared decoder only response.ok was checked, so this fell through to
+      // summarizeSeries and reported "No ki_db_tier series returned" — a rejected query
+      // read as "this cluster has no tier metrics".
+      const client = {
+        promRange: vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              status: "error",
+              errorType: "bad_data",
+              error: 'invalid parameter "query"',
+            }),
+            { status: 200 },
+          ),
+        ),
+      } as unknown as ObservabilityClient;
+      const r = await tierSnapshot(client, {});
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error).toBe('bad_data: invalid parameter "query"');
+    });
+
     it("returns a failure, not a throw, when Prometheus is unreachable", async () => {
       const client = {
         promRange: vi.fn().mockRejectedValue(new Error("Prometheus endpoint is not configured")),
