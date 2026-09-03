@@ -4,8 +4,8 @@
  * Intentionally NOT an LLM-as-judge — these are fast, deterministic regex/order
  * checks that pin the invariants declared in knowledge/templates/report.md and
  * enforced by the system prompt (Metadata -> Summary -> Remediation -> Root
- * Cause Analysis -> Evidence Collected -> Evidence Gaps -> Mutations Applied
- * -> Post-Remediation Verification).
+ * Cause Analysis -> Evidence Collected -> Timeline -> Evidence Gaps ->
+ * Mutations Applied -> Post-Remediation Verification).
  *
  * Returns a machine-readable result so the eval runner can distinguish
  * "model didn't write a report at all" from "report structure is wrong".
@@ -22,6 +22,7 @@ export const REQUIRED_SECTIONS: readonly string[] = [
   "## Remediation",
   "## Root Cause Analysis",
   "## Evidence Collected",
+  "## Timeline",
   "## Evidence Gaps",
   "## Mutations Applied",
   "## Post-Remediation Verification",

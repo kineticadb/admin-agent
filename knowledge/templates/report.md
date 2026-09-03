@@ -34,6 +34,16 @@
 
 ---
 
+## Timeline
+
+| Time (UTC) | Source           | As observed      | Event         |
+| ---------- | ---------------- | ---------------- | ------------- |
+| HH:MM:SS   | tool_name / file | raw stamp (zone) | what happened |
+
+[One axis: UTC. Every row names the tool or file it came from and the stamp exactly as observed, with its clock. Where a stamp cannot be converted because the offset between its clock and UTC is unknown, write "unknown" in the UTC column, keep the row, and record the missing offset under Evidence Gaps. See One Time Axis. Write "None" if no time-ordered events were established.]
+
+---
+
 ## Evidence Gaps
 
 [Any tool calls that failed or returned incomplete data. Include HTTP status codes where available, e.g., "Cluster status: unavailable (HTTP 503)". Write "None" if all tools responded successfully.]
@@ -42,9 +52,9 @@
 
 ## Mutations Applied
 
-| Timestamp | Tool      | Parameters  | Before | After | Approval        | Verified             |
-| --------- | --------- | ----------- | ------ | ----- | --------------- | -------------------- |
-| HH:MM:SS  | tool_name | param=value | old    | new   | APPROVED/DENIED | confirmed/failed/N/A |
+| Time (UTC) | Tool      | Parameters  | Before | After | Approval        | Verified             |
+| ---------- | --------- | ----------- | ------ | ----- | --------------- | -------------------- |
+| HH:MM:SS   | tool_name | param=value | old    | new   | APPROVED/DENIED | confirmed/failed/N/A |
 
 Write "None" if no mutations were proposed during this investigation.
 

@@ -9,6 +9,7 @@
 import { z } from "zod";
 import type { BundleSource, BundleLogQuery } from "../../bundle/BundleSource.js";
 import { scrubCredentialPatterns } from "../audit-redact.js";
+import { zoneLabel, isMixedZones, MIXED_ZONE_SEARCH_NOTE } from "./timestamp-zone.js";
 import type { ToolResult } from "../../types/index.js";
 
 export const BundleSearchLogsSchema = z.object({
@@ -65,9 +66,12 @@ export async function bundleSearchLogs(
 
   // totalMatched is the TRUE total across every scanned file; only the displayed
   // lines are capped. Say "display capped" so the count isn't read as a lower bound.
-  const note = result.capped
+  const countNote = result.capped
     ? `Showing ${result.matches.length} of ${result.totalMatched} matches across ${result.filesScanned.length} file(s) (display capped). Narrow with a tighter regex, severity, or time window to surface the specific lines.`
     : `${result.totalMatched} match(es) across ${result.filesScanned.length} file(s).`;
+  // One result spanning both clocks has no single order: say so up front, tag every row.
+  const mixed = isMixedZones(result.zones);
+  const note = mixed ? `${countNote} ${MIXED_ZONE_SEARCH_NOTE}` : countNote;
 
   return {
     ok: true,
@@ -77,10 +81,13 @@ export async function bundleSearchLogs(
       lines_scanned: result.linesScanned,
       files_scanned: result.filesScanned.join(", ") || "none",
       capped: result.capped,
+      timestamp_zone: zoneLabel(result.zones),
       matches: result.matches.map((m) => ({
         file: m.file,
         line: m.lineNumber,
         timestamp: m.timestamp ?? "",
+        // Only when mixed — otherwise timestamp_zone says it once and this repeats it 200x.
+        ...(mixed ? { zone: m.timestampZone ?? "" } : {}),
         severity: m.severity ?? "",
         rank: m.rank ?? "",
         // Logged SQL can carry inline credentials (IDENTIFIED BY, SET PASSWORD).

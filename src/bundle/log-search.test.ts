@@ -257,3 +257,47 @@ describe("aggregateTimeline", () => {
     expect(r.error).toBeDefined();
   });
 });
+
+describe("searchLogFile / aggregateTimeline — timestamp zone provenance", () => {
+  // Both dialects in one file — isolates per-line tagging from file selection.
+  const MIXED = [
+    "2026-06-11 15:18:07.000 WARN  (1,1,r0/ctx) node2 Mem.cpp:9 - memory high",
+    '{"labels":{"level":"error"},"line":"2026-06-11 22:18:08.000 error gpudb_log rank-2 :  ERROR  (1,1,r2/ctx) node3 Gpu.cpp:3 - GPU OOM","timestamp":"2026-06-11T22:18:08.000Z"}',
+  ];
+  let mixedPath: string;
+
+  beforeAll(async () => {
+    mixedPath = join(dir, "mixed.log");
+    await writeFile(mixedPath, MIXED.join("\n"), "utf-8");
+  });
+
+  it("tags each match with the clock its stamp came from", async () => {
+    const r = await searchLogFile(mixedPath, {});
+    expect(r.matches.map((m) => m.timestampZone)).toEqual(["local", "utc"]);
+  });
+
+  it("reports the set of zones seen among matched lines, in a stable order", async () => {
+    expect((await searchLogFile(mixedPath, {})).zones).toEqual(["local", "utc"]);
+    expect((await searchLogFile(logPath, {})).zones).toEqual(["local"]);
+  });
+
+  it("counts zones for matches beyond the display cap too", async () => {
+    const r = await searchLogFile(mixedPath, { maxMatches: 1 });
+    expect(r.matches).toHaveLength(1);
+    expect(r.zones).toEqual(["local", "utc"]);
+  });
+
+  it("reports no zones when nothing matched or the read failed", async () => {
+    expect((await searchLogFile(logPath, { regex: "nomatch-xyz" })).zones).toEqual([]);
+    expect((await searchLogFile(join(dir, "missing.log"), {})).zones).toEqual([]);
+    expect((await searchLogFile(logPath, { regex: "(" })).zones).toEqual([]);
+  });
+
+  it("reports zones on the timeline as well", async () => {
+    expect((await aggregateTimeline(mixedPath, { minSeverity: "WARN" })).zones).toEqual([
+      "local",
+      "utc",
+    ]);
+    expect((await aggregateTimeline(join(dir, "missing.log"))).zones).toEqual([]);
+  });
+});

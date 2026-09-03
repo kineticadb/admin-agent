@@ -69,4 +69,10 @@ describe("validateReportStructure", () => {
     expect(result.passed).toBe(false);
     expect(result.errors.some((e) => e.includes("Kinetica Version"))).toBe(true);
   });
+  it("requires a Timeline section between Evidence Collected and Evidence Gaps", () => {
+    const i = REQUIRED_SECTIONS.indexOf("## Timeline");
+    expect(i).toBeGreaterThan(REQUIRED_SECTIONS.indexOf("## Evidence Collected"));
+    expect(i).toBeLessThan(REQUIRED_SECTIONS.indexOf("## Evidence Gaps"));
+    // Absence is already covered: WELL_FORMED is built FROM REQUIRED_SECTIONS.
+  });
 });

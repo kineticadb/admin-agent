@@ -142,3 +142,13 @@ describe("live system prompt — Support Bundle Capability section", () => {
     expect(p).not.toContain("Support Bundle Layout & Parsing");
   });
 });
+
+describe("bundle prompt — one time axis rule", () => {
+  it("wires in the shared One Time Axis section, scoped to the bundle's clocks", () => {
+    const prompt = buildBundleSystemPrompt();
+    expect(prompt).toContain("### One Time Axis");
+    expect(prompt).toMatch(/logs-local/);
+    // No live connection here, so the live-alert clock must not be advertised.
+    expect(prompt).not.toContain("kinetica_cluster_status");
+  });
+});

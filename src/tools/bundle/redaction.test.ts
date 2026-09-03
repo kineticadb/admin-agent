@@ -26,6 +26,7 @@ function logSource(message: string): BundleSource {
         linesScanned: 1,
         filesScanned: ["r0.log"],
         capped: false,
+        zones: ["local"],
       }),
   } as unknown as BundleSource;
 }

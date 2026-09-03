@@ -503,3 +503,49 @@ describe("resolve — path safety", () => {
     expect(source.resolve("../../etc/passwd")).toBeUndefined();
   });
 });
+
+describe("searchLogs / logTimeline — zone provenance across the two log families", () => {
+  let zDir: string;
+  let zSource: BundleSource;
+
+  beforeAll(async () => {
+    zDir = await mkdtemp(join(tmpdir(), "bundle-zone-"));
+    await mkdir(join(zDir, "logs-local"), { recursive: true });
+    await mkdir(join(zDir, "logs"), { recursive: true });
+    // Rolling log: Kinetica's own host-local stamp.
+    await writeFile(
+      join(zDir, "logs-local", "core-gpudb-rolling-r0.log"),
+      "2026-06-11 15:00:00.000 ERROR (1,1,r0/c) node2 A.cpp:1 - rolling r0\n",
+    );
+    // r2 exists only as a Loki export, stamped by Loki.
+    await writeFile(
+      join(zDir, "logs", "rank2.log"),
+      '{"labels":{"level":"error"},"line":"2026-06-11 22:00:00.000 error gpudb_log rank-2 :  ERROR  (1,1,r2/c) node3 A.cpp:1 - loki r2","timestamp":"2026-06-11T22:00:00.000Z"}\n',
+    );
+    zSource = await createBundleSource(zDir);
+  });
+
+  afterAll(async () => {
+    await rm(zDir, { recursive: true, force: true });
+  });
+
+  it("a cluster-wide search reports both clocks and tags each match with its own", async () => {
+    const r = await zSource.searchLogs({ minSeverity: "ERROR" });
+    expect(r.zones).toEqual(["local", "utc"]);
+    const byFile = Object.fromEntries(r.matches.map((m) => [m.file, m.timestampZone]));
+    expect(byFile).toEqual({
+      "logs-local/core-gpudb-rolling-r0.log": "local",
+      "logs/rank2.log": "utc",
+    });
+  });
+
+  it("a single-family search reports one clock", async () => {
+    expect((await zSource.searchLogs({ rank: "r0" })).zones).toEqual(["local"]);
+    expect((await zSource.searchLogs({ rank: "r2" })).zones).toEqual(["utc"]);
+  });
+
+  it("the timeline reports both clocks when it merges both families", async () => {
+    const r = await zSource.logTimeline({ minSeverity: "ERROR" });
+    expect(r.zones).toEqual(["local", "utc"]);
+  });
+});

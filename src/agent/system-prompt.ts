@@ -21,6 +21,7 @@ import type { Playbook, Reference } from "../types/index.js";
 import { BUILDER_REGISTRY } from "./diagnostic-sql.js";
 import { buildEvidenceChecklist } from "../tools/catalog.js";
 import { buildObservabilitySection } from "./observability-section.js";
+import { buildTimeAxisSection } from "./time-axis-section.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
 import { REPORT_TEMPLATE } from "./report-template.js";
@@ -165,6 +166,7 @@ ${
   // Injected ONLY when an endpoint was actually reached, and gated per service inside —
   // advertising a Prometheus tool on a Loki-only stack costs the agent a wasted turn.
   const observabilitySection = buildObservabilitySection(observability, "live");
+  const timeAxisSection = buildTimeAxisSection("live", observability);
 
   return (
     `You are an expert Kinetica GPU database administrator and diagnostician with deep knowledge of Kinetica's internals, system tables, REST API, and common failure patterns. Your job is to autonomously investigate database issues reported by operators, gather diagnostic evidence, reason over that evidence to identify root causes, and produce a structured diagnostic report with actionable remediation steps.
@@ -338,6 +340,8 @@ Every conclusion must reference specific evidence:
   - "Log retrieval: failed (HTTP status 401 — authentication issue)"
 
 Never halt the investigation on a single tool failure.
+
+${timeAxisSection}
 
 ---
 

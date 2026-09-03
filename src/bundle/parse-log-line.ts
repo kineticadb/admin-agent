@@ -23,16 +23,54 @@
  *
  * The timestamp is kept as its original fixed-width string. Because the format
  * is `YYYY-MM-DD HH:MM:SS.mmm`, lexical string comparison is chronological, so
- * callers can range-filter without timezone-fraught epoch conversion.
+ * callers can range-filter without timezone-fraught epoch conversion — but only within
+ * one clock, which is what `timestampZone` reports. See TimestampZone.
  *
  * Pure, never throws.
  */
 
-import { unwrapLokiJsonl } from "./unwrap-loki-jsonl.js";
+import { unwrapLokiJsonl, type LokiStampSource } from "./unwrap-loki-jsonl.js";
+
+/**
+ * Which clock wrote a parsed timestamp: `"local"` = Kinetica's own host-local stamp, no
+ * zone marker (rolling logs, and a pass-through Loki record that kept it); `"utc"` = a
+ * Loki export substituted its own.
+ *
+ * The bundle records no UTC offset, so across zones one event has two wall-clock times
+ * and lexical order is meaningless — callers surface the zone instead of ordering across it.
+ *
+ * BUNDLE LOG LINES only. Do NOT widen for a live source: every label string built on this
+ * is bundle-specific, and the live tools already declare their one fixed zone per note.
+ */
+const TIMESTAMP_ZONES = ["local", "utc"] as const;
+export type TimestampZone = (typeof TIMESTAMP_ZONES)[number];
+
+/**
+ * One bit per zone, for accumulating which clocks a whole file held.
+ *
+ * A `Set` measured ~2 ms slower per 20 MB log — this runs on every MATCHED line, and a
+ * two-value domain needs no hashing — and a mask lets callers early-out at ALL_ZONE_BITS.
+ */
+export const ZONE_BITS: Readonly<Record<TimestampZone, number>> = { local: 1, utc: 2 };
+
+/** Both clocks seen — further lines can add nothing. */
+export const ALL_ZONE_BITS = ZONE_BITS.local | ZONE_BITS.utc;
+
+/** The zones present in `mask`, in stable TIMESTAMP_ZONES order. */
+export function orderZones(mask: number): readonly TimestampZone[] {
+  return TIMESTAMP_ZONES.filter((z) => (mask & ZONE_BITS[z]) !== 0);
+}
+
+/** Only `passthrough` keeps Kinetica's stamp; the other two are Loki's own. */
+function zoneOfStampSource(source: LokiStampSource): TimestampZone {
+  return source === "passthrough" ? "local" : "utc";
+}
 
 export interface ParsedLogLine {
   /** Raw timestamp string, e.g. "2026-06-11 15:18:06.569". Sorts chronologically as a string. */
   readonly timestamp?: string;
+  /** Clock that wrote `timestamp` — present iff `timestamp` is. */
+  readonly timestampZone?: TimestampZone;
   /** Raw severity token, e.g. "INFO", "WARN", "ERROR", "UERR", "FATAL". */
   readonly severity?: string;
   readonly pid?: string;
@@ -84,13 +122,17 @@ export function parseLogLine(line: string): ParsedLogLine {
   // Loki JSONL records (logs/rank*.log) are unwrapped to a standard line first; raw
   // (non-JSONL) lines pass through untouched. `raw` always preserves the ORIGINAL line
   // so regex search still tests the true bundle content.
-  const effective = unwrapLokiJsonl(line) ?? line;
+  const unwrapped = unwrapLokiJsonl(line);
+  const effective = unwrapped?.line ?? line;
   const match = PREFIX_RE.exec(effective);
   if (!match) {
     return { message: effective, raw: line };
   }
 
   const [, timestamp, severity, paren, rest] = match;
+  // The unwrapper's call, not a guess from whether it fired.
+  const timestampZone: TimestampZone =
+    unwrapped !== undefined ? zoneOfStampSource(unwrapped.stampSource) : "local";
   const parts = paren.split(",");
   const pid = parts[0]?.trim() || undefined;
   const tid = parts[1]?.trim() || undefined;
@@ -100,8 +142,20 @@ export function parseLogLine(line: string): ParsedLogLine {
   const coreTail = CORE_TAIL_RE.exec(rest);
   if (coreTail) {
     const [, host, source, message] = coreTail;
-    return { timestamp, severity, pid, tid, context, rank, host, source, message, raw: line };
+    return {
+      timestamp,
+      timestampZone,
+      severity,
+      pid,
+      tid,
+      context,
+      rank,
+      host,
+      source,
+      message,
+      raw: line,
+    };
   }
 
-  return { timestamp, severity, pid, tid, context, rank, message: rest, raw: line };
+  return { timestamp, timestampZone, severity, pid, tid, context, rank, message: rest, raw: line };
 }

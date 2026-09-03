@@ -465,8 +465,15 @@ function makeFakeBundleSource() {
       linesScanned: 0,
       filesScanned: [],
       capped: false,
+      zones: [],
     }),
-    logTimeline: async () => ({ buckets: [], linesScanned: 0, totalCounted: 0, filesScanned: [] }),
+    logTimeline: async () => ({
+      buckets: [],
+      linesScanned: 0,
+      totalCounted: 0,
+      filesScanned: [],
+      zones: [],
+    }),
     collectionErrors: async () => [],
   };
 }

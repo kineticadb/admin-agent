@@ -115,7 +115,7 @@ export async function sniffFile(
   // 2. Loki/promtail JSONL export — the first non-blank line unwraps to a log line.
   const unwrapped = unwrapLokiJsonl(lines[0]);
   if (unwrapped !== undefined) {
-    const p = parseLogLine(unwrapped);
+    const p = parseLogLine(unwrapped.line);
     const rank = p.rank;
     return {
       kind: "loki-tail",

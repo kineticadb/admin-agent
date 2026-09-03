@@ -26,6 +26,7 @@ import type { Playbook, Reference } from "../types/index.js";
 import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
 import { buildBundleEvidenceChecklist } from "../tools/bundle/catalog.js";
 import { buildObservabilitySection } from "./observability-section.js";
+import { buildTimeAxisSection } from "./time-axis-section.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { REPORT_TEMPLATE } from "./report-template.js";
 
@@ -43,6 +44,7 @@ export function buildBundleSystemPrompt(
   // and events from the incident itself. Without this the tools are registered and
   // discovery has already run, but the agent is never told they exist.
   const observabilitySection = buildObservabilitySection(observability, "bundle");
+  const timeAxisSection = buildTimeAxisSection("bundle", observability);
 
   const versionSection = kineticaVersion
     ? `**Kinetica Version:** ${kineticaVersion} (detected from the bundle's gpudb.txt / gpudb.conf)`
@@ -132,6 +134,8 @@ Every conclusion must cite specific evidence — a file, a timestamp, a log line
 Note gaps and continue — never halt on a missing artifact:
 - "Host memory at crash: unavailable (mem.txt is a point-in-time snapshot taken during collection, not at crash time)."
 - "GPU metrics: unavailable (nvidia-smi collection FAILED — CPU-only host)."
+
+${timeAxisSection}
 
 ---
 

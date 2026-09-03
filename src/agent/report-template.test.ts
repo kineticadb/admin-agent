@@ -16,6 +16,7 @@ describe("REPORT_TEMPLATE", () => {
     expect(REPORT_TEMPLATE).toContain("## Remediation");
     expect(REPORT_TEMPLATE).toContain("## Root Cause Analysis");
     expect(REPORT_TEMPLATE).toContain("## Evidence Collected");
+    expect(REPORT_TEMPLATE).toContain("## Timeline");
     expect(REPORT_TEMPLATE).toContain("## Evidence Gaps");
     expect(REPORT_TEMPLATE).toContain("## Mutations Applied");
     expect(REPORT_TEMPLATE).toContain("## Post-Remediation Verification");
@@ -29,10 +30,12 @@ describe("REPORT_TEMPLATE", () => {
     expect(remediationIdx).toBeLessThan(rootCauseIdx);
   });
 
-  it("preserves canonical section ordering (Evidence Collected before Evidence Gaps)", () => {
+  it("preserves canonical section ordering (Evidence Collected before Timeline before Evidence Gaps)", () => {
     const collectedIdx = REPORT_TEMPLATE.indexOf("## Evidence Collected");
+    const timelineIdx = REPORT_TEMPLATE.indexOf("## Timeline");
     const gapsIdx = REPORT_TEMPLATE.indexOf("## Evidence Gaps");
-    expect(collectedIdx).toBeLessThan(gapsIdx);
+    expect(collectedIdx).toBeLessThan(timelineIdx);
+    expect(timelineIdx).toBeLessThan(gapsIdx);
   });
 
   it("preserves canonical section ordering (Mutations Applied before Post-Remediation)", () => {
@@ -50,8 +53,14 @@ describe("REPORT_TEMPLATE", () => {
 
   it("includes the Mutations Applied table scaffolding", () => {
     expect(REPORT_TEMPLATE).toMatch(
-      /\|\s*Timestamp\s*\|\s*Tool\s*\|\s*Parameters\s*\|\s*Before\s*\|\s*After\s*\|\s*Approval\s*\|\s*Verified\s*\|/,
+      /\|\s*Time \(UTC\)\s*\|\s*Tool\s*\|\s*Parameters\s*\|\s*Before\s*\|\s*After\s*\|\s*Approval\s*\|\s*Verified\s*\|/,
     );
     expect(REPORT_TEMPLATE).toContain("APPROVED/DENIED");
+  });
+  it("scaffolds the Timeline table on a single UTC axis with source and as-observed columns", () => {
+    expect(REPORT_TEMPLATE).toMatch(
+      /\|\s*Time \(UTC\)\s*\|\s*Source\s*\|\s*As observed\s*\|\s*Event\s*\|/,
+    );
+    expect(REPORT_TEMPLATE).toMatch(/offset between its clock and UTC is unknown/i);
   });
 });

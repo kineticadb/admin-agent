@@ -13,13 +13,33 @@
  * reconstruct a standard `<ts> <body>` line so the existing parseLogLine prefix/tail
  * regexes apply unchanged (and severity/timestamp filtering works).
  *
+ * The <ts> we emit is the record's RFC 3339 `timestamp` field (UTC by format), normalized
+ * to millisecond width; the rendered <loki-ts> is a fallback.
+ *
  * Without this, parseLogLine sees a line starting with `{`, fails its prefix regex,
  * and returns the whole JSON blob as a raw message with NO severity/timestamp — so a
  * minSeverity-filtered search or a timeline over a rank log silently matches nothing.
  *
- * Returns the reconstructed line, or undefined when the input is not a Loki JSONL
- * record (caller then parses it as a raw line). Pure, never throws.
+ * Returns the line plus its stamp's provenance, or undefined for non-JSONL input (the
+ * caller then parses it as a raw line). Provenance is RETURNED, not inferred from "did
+ * this fire": the pass-through branch emits Kinetica's original host-local stamp, so
+ * "unwrapped implies UTC" would label it UTC and hide a mixed-clock result.
+ * Pure, never throws.
  */
+
+/** Which clock wrote the stamp on the returned line. */
+export type LokiStampSource =
+  /** The record's RFC 3339 `timestamp` field. */
+  | "utc-field"
+  /** Loki's rendered stamp — its clock too, used when the `timestamp` field won't parse. */
+  | "rendered"
+  /** No Loki header found, so `line` is the inner text verbatim: any stamp is Kinetica's. */
+  | "passthrough";
+
+export interface UnwrappedLokiLine {
+  readonly line: string;
+  readonly stampSource: LokiStampSource;
+}
 
 // Leading "<date> <time>" timestamp at the start of the `.line` field — the Loki
 // __timestamp__ rendered in space-separated form (sorts lexically as chronological).
@@ -30,7 +50,20 @@ const LEADING_TS_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\s+/;
 // " : " (space-colon-space), so the FIRST occurrence is always the real separator.
 const HEADER_BODY_SEP = " : ";
 
-export function unwrapLokiJsonl(line: string): string | undefined {
+// The record's `timestamp` field: RFC 3339 UTC, any fraction length (Loki sends
+// nanoseconds; a whole second has none).
+const RFC3339_UTC_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z$/;
+
+/** "2026-06-17T18:25:57.319123Z" → "2026-06-17 18:25:57.319" (core-dialect width). */
+function utcFieldToLogStamp(field: unknown): string | undefined {
+  if (typeof field !== "string") return undefined;
+  const m = RFC3339_UTC_RE.exec(field);
+  if (!m) return undefined;
+  const [, date, time, fraction = ""] = m;
+  return `${date} ${time}.${fraction.padEnd(3, "0").slice(0, 3)}`;
+}
+
+export function unwrapLokiJsonl(line: string): UnwrappedLokiLine | undefined {
   // Fast reject without allocating: scan to the first non-whitespace char and bail
   // unless it's '{'. parseLogLine calls this for EVERY line of a multi-MB rank log, so
   // the raw-line path (the vast majority) must not pay a full-string trimStart() copy.
@@ -45,7 +78,7 @@ export function unwrapLokiJsonl(line: string): string | undefined {
     return undefined; // not valid JSON → treat as a raw line
   }
   if (typeof obj !== "object" || obj === null) return undefined;
-  const inner = (obj as { line?: unknown }).line;
+  const { line: inner, timestamp } = obj as { line?: unknown; timestamp?: unknown };
   if (typeof inner !== "string") return undefined;
 
   // inner = "<loki-ts> <level> <job> <app> : <body>". Rejoin the loki timestamp with
@@ -54,12 +87,16 @@ export function unwrapLokiJsonl(line: string): string | undefined {
   const tsMatch = LEADING_TS_RE.exec(inner);
   const sepIdx = inner.indexOf(HEADER_BODY_SEP);
   if (tsMatch && sepIdx !== -1) {
-    const ts = tsMatch[1];
+    // Prefer the UTC `timestamp` field (UTC by format); fall back to the rendered stamp.
+    const utcField = utcFieldToLogStamp(timestamp);
     const body = inner.slice(sepIdx + HEADER_BODY_SEP.length).trim();
-    return `${ts} ${body}`;
+    return {
+      line: `${utcField ?? tsMatch[1]} ${body}`,
+      stampSource: utcField !== undefined ? "utc-field" : "rendered",
+    };
   }
 
   // No recognizable Loki header (e.g. a continuation/stack line Loki captured whole) —
   // hand back the inner line for best-effort parsing rather than the JSON wrapper.
-  return inner;
+  return { line: inner, stampSource: "passthrough" };
 }

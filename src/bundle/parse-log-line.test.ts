@@ -125,3 +125,32 @@ describe("severityRank", () => {
     expect(severityRank("BOGUS")).toBe(-1);
   });
 });
+
+describe("parseLogLine — timestamp zone provenance", () => {
+  it("labels a raw Kinetica line's stamp as host-local (no zone marker)", () => {
+    const p = parseLogLine("2026-06-11 15:18:06.573 WARN  (1,1,r0/c) node2 X.cpp:1 - m");
+    expect(p.timestampZone).toBe("local");
+  });
+
+  it("labels a Loki JSONL record's stamp as UTC", () => {
+    const rec =
+      '{"labels":{"level":"error"},"line":"2026-06-17 18:25:57.319 error gpudb_log rank-3 :  ERROR  (1,1,r3/c) host X.cpp:1 - boom","timestamp":"2026-06-17T18:25:57.319Z"}';
+    const p = parseLogLine(rec);
+    expect(p.timestamp).toBe("2026-06-17 18:25:57.319");
+    expect(p.timestampZone).toBe("utc");
+  });
+
+  it("labels a JSONL record whose inner line kept Kinetica's own stamp as local", () => {
+    // Nothing was substituted, so "utc" here would hide a mixed-clock result.
+    const rec = '{"line":"2026-06-11 15:18:06.573 WARN  (1,1,r0/c) node2 X.cpp:1 - m"}';
+    const p = parseLogLine(rec);
+    expect(p.timestamp).toBe("2026-06-11 15:18:06.573");
+    expect(p.timestampZone).toBe("local");
+  });
+
+  it("carries no zone when there is no timestamp", () => {
+    const p = parseLogLine("    continuation line");
+    expect(p.timestamp).toBeUndefined();
+    expect(p.timestampZone).toBeUndefined();
+  });
+});

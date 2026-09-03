@@ -17,7 +17,15 @@
 
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-import { parseLogLine, severityRank, type ParsedLogLine } from "./parse-log-line.js";
+import {
+  parseLogLine,
+  severityRank,
+  orderZones,
+  ZONE_BITS,
+  ALL_ZONE_BITS,
+  type ParsedLogLine,
+  type TimestampZone,
+} from "./parse-log-line.js";
 
 export const DEFAULT_MAX_MATCHES = 200;
 
@@ -85,6 +93,8 @@ export interface LogQuery {
 export interface LogMatch {
   readonly lineNumber: number;
   readonly timestamp?: string;
+  /** Clock that wrote `timestamp` — present iff `timestamp` is. */
+  readonly timestampZone?: TimestampZone;
   readonly severity?: string;
   readonly rank?: string;
   readonly message: string;
@@ -98,6 +108,11 @@ export interface LogSearchResult {
   readonly linesScanned: number;
   /** True when matches were dropped to respect `maxMatches`. */
   readonly capped: boolean;
+  /**
+   * Clocks the MATCHED lines were stamped by — counted past the display cap, so a capped
+   * result still reports both. More than one entry means the result has no single order.
+   */
+  readonly zones: readonly TimestampZone[];
   readonly error?: string;
 }
 
@@ -171,7 +186,10 @@ function matchesFilters(
 function buildMatch(lineNumber: number, parsed: ParsedLogLine): LogMatch {
   return {
     lineNumber,
-    ...(parsed.timestamp !== undefined ? { timestamp: parsed.timestamp } : {}),
+    // One spread: the parser sets the zone iff it set the timestamp.
+    ...(parsed.timestamp !== undefined
+      ? { timestamp: parsed.timestamp, timestampZone: parsed.timestampZone }
+      : {}),
     ...(parsed.severity !== undefined ? { severity: parsed.severity } : {}),
     ...(parsed.rank !== undefined ? { rank: parsed.rank } : {}),
     message: parsed.message,
@@ -220,6 +238,7 @@ export async function searchLogFile(filePath: string, query: LogQuery): Promise<
       totalMatched: 0,
       linesScanned: 0,
       capped: false,
+      zones: [],
       error: `invalid regex: ${message}`,
     };
   }
@@ -236,6 +255,7 @@ export async function searchLogFile(filePath: string, query: LogQuery): Promise<
   const matches: LogMatch[] = [];
   let totalMatched = 0;
   let linesScanned = 0;
+  let zoneMask = 0;
   // An open multi-line record (coalesce mode): continuation lines accrue here until the
   // next timestamped record closes it. Declared outside the try so the catch can still
   // flush a record that was mid-assembly when a read error hit.
@@ -282,6 +302,10 @@ export async function searchLogFile(filePath: string, query: LogQuery): Promise<
       if (!matchesFilters(parsed, boundedQuery, regex, minRank)) continue;
 
       totalMatched++;
+      // Before the cap check, so a capped result still reports both clocks.
+      if (zoneMask !== ALL_ZONE_BITS && parsed.timestampZone !== undefined) {
+        zoneMask |= ZONE_BITS[parsed.timestampZone];
+      }
       if (matches.length < maxMatches) {
         const base = buildMatch(linesScanned, parsed);
         // In coalesce mode hold the match open so following continuation lines can attach;
@@ -300,11 +324,18 @@ export async function searchLogFile(filePath: string, query: LogQuery): Promise<
       totalMatched,
       linesScanned,
       capped: totalMatched > matches.length,
+      zones: orderZones(zoneMask),
       error: message,
     };
   }
 
-  return { matches, totalMatched, linesScanned, capped: totalMatched > matches.length };
+  return {
+    matches,
+    totalMatched,
+    linesScanned,
+    capped: totalMatched > matches.length,
+    zones: orderZones(zoneMask),
+  };
 }
 
 export interface TimelineQuery {
@@ -328,6 +359,8 @@ export interface TimelineResult {
   readonly buckets: readonly TimelineBucket[];
   readonly linesScanned: number;
   readonly totalCounted: number;
+  /** Clocks the COUNTED lines were stamped by — see LogSearchResult.zones. */
+  readonly zones: readonly TimestampZone[];
   readonly error?: string;
 }
 
@@ -347,6 +380,7 @@ export async function aggregateTimeline(
   const buckets = new Map<string, Record<string, number>>();
   let linesScanned = 0;
   let totalCounted = 0;
+  let zoneMask = 0;
 
   try {
     const rl = createInterface({
@@ -366,10 +400,13 @@ export async function aggregateTimeline(
       bucket[parsed.severity] = (bucket[parsed.severity] ?? 0) + 1;
       buckets.set(key, bucket);
       totalCounted++;
+      if (zoneMask !== ALL_ZONE_BITS && parsed.timestampZone !== undefined) {
+        zoneMask |= ZONE_BITS[parsed.timestampZone];
+      }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { buckets: [], linesScanned, totalCounted, error: message };
+    return { buckets: [], linesScanned, totalCounted, zones: orderZones(zoneMask), error: message };
   }
 
   const result: TimelineBucket[] = [];
@@ -378,5 +415,5 @@ export async function aggregateTimeline(
     result.push({ bucket, counts, total });
   }
 
-  return { buckets: result, linesScanned, totalCounted };
+  return { buckets: result, linesScanned, totalCounted, zones: orderZones(zoneMask) };
 }

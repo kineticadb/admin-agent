@@ -999,3 +999,16 @@ describe("buildSystemPrompt", () => {
     });
   });
 });
+
+describe("one time axis rule", () => {
+  it("wires in the shared One Time Axis section", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("### One Time Axis");
+    expect(prompt).toMatch(/unless both are UTC or the offset/i);
+  });
+
+  it("names the live clocks, not only the bundle's", () => {
+    const prompt = buildSystemPrompt();
+    expect(prompt).toContain("kinetica_cluster_status");
+  });
+});

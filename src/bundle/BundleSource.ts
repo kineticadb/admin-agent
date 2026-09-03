@@ -31,6 +31,7 @@ import {
   type TimelineBucket,
 } from "./log-search.js";
 import { buildIndex, type FileIndexEntry } from "./bundle-index.js";
+import { orderZones, ZONE_BITS, type TimestampZone } from "./parse-log-line.js";
 
 const GPUDB_VERSION_RE = /GPUdb version\s*:\s*(\S+)/;
 
@@ -64,6 +65,11 @@ export interface BundleLogSearchResult {
   readonly linesScanned: number;
   readonly filesScanned: readonly string[];
   readonly capped: boolean;
+  /**
+   * Clocks the matched stamps were written by, merged across files. Both present means the
+   * result spans both log families and must not be read as one sequence.
+   */
+  readonly zones: readonly TimestampZone[];
 }
 
 export interface BundleTimelineResult {
@@ -71,6 +77,8 @@ export interface BundleTimelineResult {
   readonly linesScanned: number;
   readonly totalCounted: number;
   readonly filesScanned: readonly string[];
+  /** Clocks the counted stamps were written by — see BundleLogSearchResult.zones. */
+  readonly zones: readonly TimestampZone[];
 }
 
 export interface ConfigReadResult {
@@ -373,6 +381,7 @@ export async function createBundleSource(rootDir: string): Promise<BundleSource>
     const filesScanned: string[] = [];
     let totalMatched = 0;
     let linesScanned = 0;
+    let zoneMask = 0;
     // `maxMatches` caps the returned match PAYLOADS (so a broad search can't flood
     // the context), NOT the count or the file set. The budget is shared across files:
     // once it's spent we keep scanning with maxMatches:0 — searchLogFile still streams
@@ -389,6 +398,7 @@ export async function createBundleSource(rootDir: string): Promise<BundleSource>
       filesScanned.push(file.relPath);
       totalMatched += r.totalMatched;
       linesScanned += r.linesScanned;
+      for (const z of r.zones) zoneMask |= ZONE_BITS[z];
       for (const m of r.matches) matches.push({ ...m, file: file.relPath });
     }
 
@@ -400,6 +410,7 @@ export async function createBundleSource(rootDir: string): Promise<BundleSource>
       linesScanned,
       filesScanned,
       capped: totalMatched > matches.length,
+      zones: orderZones(zoneMask),
     };
   };
 
@@ -411,12 +422,14 @@ export async function createBundleSource(rootDir: string): Promise<BundleSource>
     const filesScanned: string[] = [];
     let linesScanned = 0;
     let totalCounted = 0;
+    let zoneMask = 0;
 
     for (const file of files) {
       const r = await aggregateTimeline(file.absPath, lineQuery);
       filesScanned.push(file.relPath);
       linesScanned += r.linesScanned;
       totalCounted += r.totalCounted;
+      for (const z of r.zones) zoneMask |= ZONE_BITS[z];
       for (const b of r.buckets) {
         const existing = merged.get(b.bucket) ?? {};
         for (const [sev, n] of Object.entries(b.counts)) existing[sev] = (existing[sev] ?? 0) + n;
@@ -432,7 +445,7 @@ export async function createBundleSource(rootDir: string): Promise<BundleSource>
         total: Object.values(counts).reduce((x, y) => x + y, 0),
       }));
 
-    return { buckets, linesScanned, totalCounted, filesScanned };
+    return { buckets, linesScanned, totalCounted, filesScanned, zones: orderZones(zoneMask) };
   };
 
   const collectionErrors = async (): Promise<readonly string[]> => {

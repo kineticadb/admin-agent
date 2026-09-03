@@ -10,6 +10,7 @@
 import { z } from "zod";
 import type { BundleSource, BundleTimelineQuery } from "../../bundle/BundleSource.js";
 import type { ToolResult } from "../../types/index.js";
+import { zoneLabel, isMixedZones, MIXED_ZONE_TIMELINE_NOTE } from "./timestamp-zone.js";
 
 export const BundleLogTimelineSchema = z.object({
   min_severity: z.enum(["INFO", "WARN", "UERR", "ERROR", "FATAL"]).optional(),
@@ -57,15 +58,20 @@ export async function bundleLogTimeline(
     return row;
   });
 
+  const countNote =
+    result.totalCounted === 0
+      ? "No lines at or above the severity threshold — try a lower min_severity."
+      : `${result.totalCounted} event(s) across ${result.buckets.length} bucket(s), ${result.filesScanned.length} file(s).`;
+  // Buckets key off the stamp prefix, so mixing clocks merges two of them into one key.
+  const mixed = isMixedZones(result.zones);
+
   return {
     ok: true,
-    note:
-      result.totalCounted === 0
-        ? "No lines at or above the severity threshold — try a lower min_severity."
-        : `${result.totalCounted} event(s) across ${result.buckets.length} bucket(s), ${result.filesScanned.length} file(s).`,
+    note: mixed ? `${countNote} ${MIXED_ZONE_TIMELINE_NOTE}` : countNote,
     data: {
       lines_scanned: result.linesScanned,
       files_scanned: result.filesScanned.join(", ") || "none",
+      timestamp_zone: zoneLabel(result.zones),
       buckets: rows,
     },
   };
