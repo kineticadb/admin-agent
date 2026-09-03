@@ -10,18 +10,11 @@
  */
 
 import { buildObservabilityEvidenceChecklist } from "../tools/observability/catalog.js";
-import type { ObservabilityToolName } from "../tools/observability/catalog.js";
+import { OBSERVABILITY_TOOL_NAMES, TOOL_ENDPOINT } from "../tools/observability/index.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 
 /** Backtick, matching the prompt builders' local convention. */
 const t = "`";
-
-/** Tools that only work with Prometheus, and the one that only works with Loki. */
-const PROM_TOOLS: readonly ObservabilityToolName[] = [
-  "kinetica_tier_snapshot",
-  "kinetica_prom_query",
-];
-const LOKI_TOOLS: readonly ObservabilityToolName[] = ["kinetica_loki_query"];
 
 /** Trap list for reading tier metrics correctly. Prometheus-only. */
 function promTraps(): string {
@@ -34,7 +27,13 @@ function promTraps(): string {
 - Rank 0 is the head node: it reports only ${t}size_bytes${t} and ${t}used_bytes${t}, with no watermarks or eviction counters. That is normal, not missing data.
 - ${t}ki_db_tier${t} carries no user or table labels, so it can tell you a tier is under pressure but never WHO or WHAT caused it. Pair it with SQL against ${t}ki_catalog${t} or with ${t}kinetica_loki_query${t} ${t}class="sql"${t} for attribution.
 
-**Prometheus is the running system; ${t}gpudb.conf${t} is only intent.** A config file states what was requested. ${t}kinetica_tier_snapshot${t} states what is actually enforced right now. When they disagree, the metric wins — and the disagreement is itself the finding (many settings take effect only after a restart).`;
+**Prometheus is the running system; ${t}gpudb.conf${t} is only intent.** A config file states what was requested. ${t}kinetica_tier_snapshot${t} states what is actually enforced right now. When they disagree, the metric wins — and the disagreement is itself the finding (many settings take effect only after a restart).
+
+**Use the site's OWN thresholds, never a generic figure.** ${t}kinetica_prom_alerts${t} returns each rule's ${t}expr${t} — this site's definition of "too high" — plus what is firing now. Cite that, or the enforced limit from ${t}kinetica_tier_snapshot${t}. What counts as high is per-customer, so a number you supply from general knowledge is a guess presented as a finding.
+- **Zero configured rules is the ABSENCE of monitoring, not health** — and on a kagent-installed stack it is unexpected. A measured kagent install ships a Prometheus rule file covering host load, memory, disk, request concurrency and RabbitMQ HA queue depth, so an empty list there means those rules are missing or failed to load, NOT that nobody set a threshold. Either way never read it as "nothing is wrong"; report it as a monitoring gap in its own right.
+- A rule whose ${t}health${t} is ${t}err${t} can never fire, so the subsystem it watches is unmonitored no matter how quiet it looks.
+- **Read the ${t}for${t} column; never infer the dwell time from the rule name.** A name like ${t}mem90for5m${t} is just a label someone typed — it can disagree with the actual ${t}for${t}, which has been observed as ${t}0s${t} on such rules. When ${t}for${t} is ${t}0s${t} the rule fires on a single scrape, so firing does NOT mean "sustained" and flapping is expected. Cite the column, not the name.
+- Kinetica's own alerts (${t}alert_memory_percentage${t}, ${t}alert_disk_percentage${t}, heartbeat) are pushed by the database straight to Alertmanager and do **not** appear in Prometheus. Read those with ${t}kinetica_cluster_status${t}. So "no Prometheus alert rules" does not mean the database is not alerting.`;
 }
 
 /** What Loki actually holds. Loki-only. */
@@ -67,7 +66,9 @@ export function buildObservabilitySection(
   const hasLoki = Boolean(observability?.lokiUrl);
   if (!hasProm && !hasLoki) return "";
 
-  const available = [...(hasProm ? PROM_TOOLS : []), ...(hasLoki ? LOKI_TOOLS : [])];
+  // Filtered from the tuple, so row order is owned by OBSERVABILITY_TOOL_NAMES alone.
+  const reachable = { prom: hasProm, loki: hasLoki };
+  const available = OBSERVABILITY_TOOL_NAMES.filter((name) => reachable[TOOL_ENDPOINT[name]]);
   const services = [
     hasProm ? "**Prometheus** (metrics over time)" : "",
     hasLoki ? "**Loki** (structured events, plus rank log lines when promtail is on)" : "",
@@ -81,8 +82,8 @@ export function buildObservabilitySection(
       : `This cluster exposes a live stats stack: ${services}. It runs on a **separate host** from the database, so it stays up — and keeps its history — even when the database does not.`;
 
   const firstMove = hasProm
-    ? `**Round 1 should include ${t}kinetica_tier_snapshot${t}** — it covers every rank in one call and is the cheapest way to see whether the problem is resource pressure at all.`
-    : `**Prometheus is not reachable in this session**, so there are no metrics: do not reach for tier or host statistics. ${t}kinetica_loki_query${t} is the only observability tool available.`;
+    ? `**Round 1 should start with ${t}kinetica_prom_alerts${t}, then ${t}kinetica_tier_snapshot${t}.** The first tells you what this site's own monitoring is already flagging and what thresholds it holds — the cheapest possible orientation, and it may name the problem outright. The second covers every rank in one call and shows whether the problem is resource pressure at all.`
+    : `**Prometheus is not reachable in this session**, so there are no metrics and no alert rules: do not reach for tier or host statistics, and do not claim the site's monitoring is quiet — you cannot see it. ${t}kinetica_loki_query${t} is the only observability tool available.`;
 
   return `
 ---

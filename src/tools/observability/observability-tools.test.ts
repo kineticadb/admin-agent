@@ -69,6 +69,22 @@ describe("makeObservabilityTools", () => {
       expect(out).toContain("KINETICA_STATS_HOST");
     });
 
+    it("gates the alerts tool on Prometheus, without touching the client", async () => {
+      const lokiOnly = {
+        lokiUrl: "http://statshost:9080",
+        promRules: vi.fn(),
+        promAlerts: vi.fn(),
+      } as unknown as ObservabilityClient;
+
+      const out = await run(lokiOnly, "kinetica_prom_alerts");
+      expect(out).toContain("Prometheus");
+      expect(out).toContain("KINETICA_STATS_HOST");
+      const calls = lokiOnly as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(calls.promRules).not.toHaveBeenCalled();
+      // /api/v1/rules already embeds live instances, so the alerts endpoint is never read.
+      expect(calls.promAlerts).not.toHaveBeenCalled();
+    });
+
     it("still runs a tool whose endpoint IS present on a partial client", async () => {
       const lokiOnly = {
         lokiUrl: "http://statshost:9080",
@@ -87,7 +103,7 @@ describe("makeObservabilityTools", () => {
 });
 
 describe("createObservabilityRegistry", () => {
-  it("registers every tool as read-only — all three are unauthenticated GETs", () => {
+  it("registers every tool as read-only — they are all unauthenticated GETs", () => {
     const registry = createObservabilityRegistry();
     for (const name of OBSERVABILITY_TOOL_NAMES) {
       expect(registry.isReadOnlyTool(name)).toBe(true);

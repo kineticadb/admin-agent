@@ -11,10 +11,19 @@
 import { OBSERVABILITY_TOOL_NAMES } from "./index.js";
 import type { ToolCatalogEntry } from "../catalog.js";
 
-export type ObservabilityToolName = (typeof OBSERVABILITY_TOOL_NAMES)[number];
+// Re-exported for the prompt builders, which read the catalog rather than the tool
+// factories. The type is derived where the tuple is declared, in ./index.js.
+export type { ObservabilityToolName } from "./index.js";
+import type { ObservabilityToolName } from "./index.js";
 
 export const OBSERVABILITY_TOOL_CATALOG: Readonly<Record<ObservabilityToolName, ToolCatalogEntry>> =
   {
+    kinetica_prom_alerts: {
+      reveals:
+        "Every alerting rule this site configured — its expression (the site's OWN threshold), for-duration, severity and health — plus what is firing or pending right now, with the value that tripped it and how long it has been active",
+      whenToUse:
+        "Round 1 of every investigation: what the site's own monitoring already flags, and what this site considers too high",
+    },
     kinetica_tier_snapshot: {
       reveals:
         "Every rank+tier at once: used vs limit, peak and when, unevictable bytes, headroom to the eviction watermark, eviction count, verdict",

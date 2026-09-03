@@ -13,6 +13,13 @@
  */
 
 import { formatBytesBase1000, type SeriesSummary } from "../rest/summarize-timeseries.js";
+import {
+  commonLabelKeys,
+  renderCommon,
+  renderNumber,
+  renderPairs,
+  REDUNDANT_WHEN_SOURCE_PRESENT,
+} from "./label-rows.js";
 
 /** One series rendered for a markdown table. */
 export type SeriesRow = {
@@ -105,22 +112,6 @@ export function describeWindow(startSec: number, endSec: number, stepSec: number
   return `Window: ${iso(startSec)} → ${iso(endSec)} UTC, ${stepSec}s step. Times below are UTC HH:MM:SS.`;
 }
 
-/**
- * Render a non-byte number compactly without destroying small magnitudes.
- *
- * Prometheus returns full float precision: measured `ki_host_cpu{what="idle"}` values
- * arrive as `75.20576380460521`, 18 characters where 6 carry the meaning, on every cell
- * of every row. Integers pass through untouched; values at or above 1 get 3 decimals;
- * below 1 uses 3 significant digits so a watermark fraction (0.9) and a sub-millisecond
- * duration (0.00012) both survive, where a flat toFixed(3) would round the latter to 0.
- */
-function renderNumber(value: number): string {
-  if (!Number.isFinite(value) || Number.isInteger(value)) return String(value);
-  const fixed = Math.abs(value) >= 1 ? value.toFixed(3) : value.toPrecision(3);
-  // Trim trailing zeros (and a bare trailing dot) so 0.900 reads as 0.9.
-  return fixed.replace(/\.?0+$/, "");
-}
-
 /** Format one value according to the resolved format. */
 function renderValue(value: number, asBytes: boolean): string {
   return asBytes ? formatBytesBase1000(value) : renderNumber(value);
@@ -133,40 +124,8 @@ function renderDelta(value: number, asBytes: boolean): string {
   return `${value > 0 ? "+" : "-"}${body}`;
 }
 
-/**
- * Labels that are pure restatements of others and only cost width.
- *
- * Measured job-name format is `ki_db_ring_<ring>_cluster_<cluster>_rank_<N>` — it encodes
- * ring, cluster and rank, all of which appear as their own labels, at ~48 characters per
- * row. `instance` is `<host>:<port>`, where `host` is its own label and the port only
- * restates which rank this is. Both are dropped ONLY when `source` is present to carry
- * the rank identity, so a non-Kinetica metric keeps them.
- */
-const REDUNDANT_WHEN_SOURCE_PRESENT = new Set(["job", "instance"]);
-
-/** Render labels as sorted `k=v` pairs. */
-function renderPairs(entries: readonly (readonly [string, string])[]): string {
-  return [...entries]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}=${v}`)
-    .join(" ");
-}
-
-/**
- * Label keys whose value is identical across every series.
- *
- * These describe the query's context rather than distinguishing its results, so they are
- * reported once in the note instead of repeated on every row. With a single series that
- * is every label, which is the correct and most compact rendering of one series.
- */
-function commonLabelKeys(series: readonly SeriesSummary[]): ReadonlySet<string> {
-  if (series.length === 0) return new Set();
-  const [head, ...rest] = series;
-  const shared = Object.keys(head.labels).filter(
-    (k) => k !== "__name__" && rest.every((s) => s.labels[k] === head.labels[k]),
-  );
-  return new Set(shared);
-}
+/** `__name__` is never hoisted: it becomes the table's own `metric` column. */
+const NEVER_HOISTED: ReadonlySet<string> = new Set(["__name__"]);
 
 /**
  * Convert summarized series into flat table rows.
@@ -179,7 +138,7 @@ export function toSeriesRows(
   opts?: SeriesRowOptions,
 ): SeriesRowSet {
   const format = opts?.format ?? "auto";
-  const common = commonLabelKeys(series);
+  const common = commonLabelKeys(series, NEVER_HOISTED);
 
   const rows = series.map((s) => {
     const asBytes = format === "bytes" || (format === "auto" && isByteMetric(s.labels));
@@ -202,8 +161,5 @@ export function toSeriesRows(
     };
   });
 
-  const head = series[0];
-  const commonPairs = head ? renderPairs([...common].map((k) => [k, head.labels[k]] as const)) : "";
-
-  return { rows, common: commonPairs };
+  return { rows, common: renderCommon(series, common) };
 }

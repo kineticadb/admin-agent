@@ -14,6 +14,7 @@ import type { ToolResult } from "../../types/index.js";
 import type { ObservabilityClient } from "../../observability/ObservabilityClient.js";
 import { summarizeSeries } from "../rest/summarize-timeseries.js";
 import { toSeriesRows, describeWindow, type SeriesRow } from "./series-rows.js";
+import { readPromBody } from "./response-body.js";
 
 /**
  * Upper bound on STEPS (intervals) per series, whatever the window. The sample count is
@@ -73,14 +74,6 @@ function deriveStep(windowSeconds: number): number {
   return Math.max(MIN_STEP_SECONDS, Math.ceil(windowSeconds / MAX_STEPS));
 }
 
-/** Extract Prometheus' `error` field from a response body, if present. */
-function promError(body: unknown): string | undefined {
-  if (body === null || typeof body !== "object") return undefined;
-  const { error, errorType } = body as { error?: unknown; errorType?: unknown };
-  if (typeof error !== "string") return undefined;
-  return typeof errorType === "string" ? `${errorType}: ${error}` : error;
-}
-
 /** Note explaining that an empty result is ambiguous. */
 function emptyNote(query: string): string {
   return (
@@ -124,31 +117,10 @@ export async function promQuery(
       ? await client.promInstant(query)
       : await client.promRange(query, start, end, step);
 
-    const raw = await response.text();
+    const decoded = await readPromBody(response);
+    if (!decoded.ok) return decoded;
 
-    let body: unknown;
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      return {
-        ok: false,
-        status: response.status,
-        error: `Prometheus returned a non-JSON body (HTTP ${response.status}).`,
-        raw,
-      };
-    }
-
-    const detail = promError(body);
-    if (!response.ok || detail !== undefined) {
-      return {
-        ok: false,
-        status: response.status,
-        error: detail ?? `Prometheus request failed with HTTP ${response.status}.`,
-        raw,
-      };
-    }
-
-    const { rows, common } = toSeriesRows(summarizeSeries(body), {
+    const { rows, common } = toSeriesRows(summarizeSeries(decoded.body), {
       format: input.format,
     });
 

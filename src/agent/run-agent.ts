@@ -221,7 +221,7 @@ export const BUNDLE_ALLOWED_TOOL_NAMES = [
 ];
 
 /**
- * Allow-list for the observability tools. All three are unauthenticated HTTP GETs
+ * Allow-list for the observability tools. They are all unauthenticated HTTP GETs
  * against read-only APIs, so they bypass the approval gate like the diagnostic tools.
  */
 export const OBSERVABILITY_ALLOWED_TOOL_NAMES = OBSERVABILITY_TOOL_NAMES.map(

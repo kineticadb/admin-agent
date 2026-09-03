@@ -49,7 +49,7 @@ Built with the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-
 **Key capabilities:**
 
 - Autonomous multi-round investigation with parallel tool calls
-- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 live tools**, plus 6 offline bundle-analysis tools and 3 Prometheus/Loki observability tools = **31 total**
+- 16 read-only diagnostic tools + 4 mutation tools with interactive approval + 2 self-managing tools (reporting, batch-column alter) = **22 live tools**, plus 6 offline bundle-analysis tools and 4 Prometheus/Loki observability tools = **32 total**
 - **Offline support-bundle analysis** — diagnose from an extracted `gpudb_sysinfo` bundle (per-rank logs, `gpudb.conf`, host diagnostics) with no live connection, or attach a bundle alongside a live session to cross-check captured history against current state — even bundles that don't match the standard layout, via file-name and content inference
 - Expert knowledge via pluggable playbooks (no code required to add new ones)
 - Schema-aware SQL — discovers actual column names at startup, never guesses
@@ -189,7 +189,7 @@ If you enter a URL without a protocol (e.g., `host:9191`), the agent auto-detect
 
 ### Observability (Prometheus / Loki)
 
-When the cluster runs Kinetica's stats stack, the agent gains three extra tools: `kinetica_tier_snapshot` (per-rank storage utilization with an eviction verdict), `kinetica_prom_query` (arbitrary PromQL, including host CPU/memory/disk and per-process OOM scores), and `kinetica_loki_query` (structured database events — per-statement SQL telemetry, request failures, rank status changes).
+When the cluster runs Kinetica's stats stack, the agent gains four extra tools: `kinetica_prom_alerts` (every alert rule this site configured, with its expression — the site's own threshold for "too high" — plus what is firing right now), `kinetica_tier_snapshot` (per-rank storage utilization with an eviction verdict), `kinetica_prom_query` (arbitrary PromQL, including host CPU/memory/disk and per-process OOM scores), and `kinetica_loki_query` (structured database events — per-statement SQL telemetry, request failures, rank status changes).
 
 Endpoints are discovered automatically from `gpudb.conf`'s `gaia.event_server_address`. **Discovery often needs help**, because a `kagent` install declares an _internal_ address for the stats host and the agent usually runs outside that network. Startup tells you which case you are in:
 
@@ -299,7 +299,7 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 ## Tools
 
-31 tools organized into categories: **22 live tools** (used when connected to a running instance), **6 offline bundle-analysis tools** (used against an extracted support bundle), and **3 observability tools** (used when a Prometheus/Loki stats stack is reachable). Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report, the agent asks the operator (in conversation) whether to save and waits for a yes — so `save_report` only writes once you've agreed.
+32 tools organized into categories: **22 live tools** (used when connected to a running instance), **6 offline bundle-analysis tools** (used against an extracted support bundle), and **4 observability tools** (used when a Prometheus/Loki stats stack is reachable). Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report, the agent asks the operator (in conversation) whether to save and waits for a yes — so `save_report` only writes once you've agreed.
 
 ### System Health & Monitoring
 
@@ -361,11 +361,12 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 Available when Prometheus/Loki are reachable (see [Observability](#observability-prometheus--loki)). All read-only, unauthenticated HTTP GETs. Metrics are reduced to per-series statistics before reaching the agent — min and max carry the timestamps they occurred at, since when a peak happened is usually the finding.
 
-| Tool                     | Description                                                                                                                                                                                                                  |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kinetica_tier_snapshot` | Every rank+tier in one call: used vs limit, windowed peak and when, unevictable bytes, bytes remaining before eviction begins, cumulative evictions, and a verdict (ok / pressure / over high-watermark / uncapped)          |
-| `kinetica_prom_query`    | Arbitrary PromQL, summarized. Includes host and process telemetry no other tool can reach — `ki_host_cpu` / `ki_host_mem` / `ki_host_disk` / `ki_host_numa` / `ki_host_swap`, and `ki_exe_mem{what="oom_score"}` per process |
-| `kinetica_loki_query`    | Structured database events — `class="sql"` (per-statement jobid, user, resource group, elapsed, full statement text), `job` (request failures with attribution), `status` (rank transitions), `config`, `mode`               |
+| Tool                     | Description                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kinetica_prom_alerts`   | Every alerting rule this site configured, with its `expr` (the site's OWN threshold for "too high"), for-duration, severity and health, plus every firing or pending instance with the value that tripped it and its age. Zero rules is reported as the **absence of monitoring**, not health — Kinetica's own `alert_*` thresholds go straight to Alertmanager and are read via `kinetica_cluster_status` |
+| `kinetica_tier_snapshot` | Every rank+tier in one call: used vs limit, windowed peak and when, unevictable bytes, bytes remaining before eviction begins, cumulative evictions, and a verdict (ok / pressure / over high-watermark / uncapped)                                                                                                                                                                                        |
+| `kinetica_prom_query`    | Arbitrary PromQL, summarized. Includes host and process telemetry no other tool can reach — `ki_host_cpu` / `ki_host_mem` / `ki_host_disk` / `ki_host_numa` / `ki_host_swap`, and `ki_exe_mem{what="oom_score"}` per process                                                                                                                                                                               |
+| `kinetica_loki_query`    | Structured database events — `class="sql"` (per-statement jobid, user, resource group, elapsed, full statement text), `job` (request failures with attribution), `status` (rank transitions), `config`, `mode`                                                                                                                                                                                             |
 
 ### Offline Bundle Analysis (read-only)
 

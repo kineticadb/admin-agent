@@ -108,6 +108,7 @@ const { MOCK_BUNDLE_TOOL_NAMES } = vi.hoisted(() => ({
 
 const { MOCK_OBSERVABILITY_TOOL_NAMES } = vi.hoisted(() => ({
   MOCK_OBSERVABILITY_TOOL_NAMES: [
+    "kinetica_prom_alerts",
     "kinetica_tier_snapshot",
     "kinetica_prom_query",
     "kinetica_loki_query",
@@ -334,7 +335,7 @@ describe("explicit allowedTools", () => {
 
     const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
     // Should have 15 diagnostic + 1 save_report + 1 alter_table_columns = 17 entries
-    expect(options.allowedTools).toHaveLength(26); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 3 observability
+    expect(options.allowedTools).toHaveLength(27); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability
     // All diagnostic tools must be prefixed with MCP server name
     for (const name of DIAGNOSTIC_TOOL_NAMES) {
       expect(options.allowedTools).toContain(`mcp__kinetica-diagnostics__${name}`);
@@ -488,7 +489,7 @@ describe("offline bundle mode", () => {
       "mcp__kinetica-diagnostics__kinetica_bundle_search_logs",
     );
     expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__save_report");
-    expect(options.allowedTools).toHaveLength(10); // 6 bundle + save_report + 3 observability
+    expect(options.allowedTools).toHaveLength(11); // 6 bundle + save_report + 4 observability
     // Observability tools are present in bundle-only mode on purpose: the stats stack
     // runs on a different host, so it commonly outlives the cluster the bundle came from.
     // No live diagnostic or mutation tools
@@ -1092,7 +1093,7 @@ describe("runAgent", () => {
     expect(callArgs.name).toBe("kinetica-diagnostics");
   });
 
-  it("creates MCP server with 29 tools (19 live + 6 bundle + 3 observability + save_report)", async () => {
+  it("creates MCP server with 30 tools (19 live + 6 bundle + 4 observability + save_report)", async () => {
     const session = makeSession();
     await runAgent(session);
     const callArgs = mockCreateSdkMcpServer.mock.calls[0][0] as {
@@ -1100,7 +1101,7 @@ describe("runAgent", () => {
       version: string;
       tools: unknown[];
     };
-    expect(callArgs.tools).toHaveLength(29);
+    expect(callArgs.tools).toHaveLength(30);
   });
 
   it("calls makeMutationTools with the session", async () => {
@@ -1261,7 +1262,7 @@ describe("runAgent", () => {
     await runAgent(session);
     const options = mockQuery.mock.calls[0][0].options as { allowedTools: string[] };
     // 15 diagnostic + 1 save_report + 1 alter_table_columns = 17, no wildcards
-    expect(options.allowedTools).toHaveLength(26); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 3 observability
+    expect(options.allowedTools).toHaveLength(27); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability
     expect(options.allowedTools.some((t: string) => t.includes("*"))).toBe(false);
     expect(options.allowedTools.some((t: string) => t.includes("mutation"))).toBe(false);
   });

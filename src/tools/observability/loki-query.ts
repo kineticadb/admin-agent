@@ -28,6 +28,7 @@ import { z } from "zod";
 import type { ToolResult } from "../../types/index.js";
 import type { ObservabilityClient } from "../../observability/ObservabilityClient.js";
 import { parseLogLine } from "../../bundle/parse-log-line.js";
+import { readLokiBody } from "./response-body.js";
 
 const DEFAULT_MINUTES_BACK = 60;
 const DEFAULT_LIMIT = 50;
@@ -405,32 +406,12 @@ export async function lokiQuery(
   const startNs = (BigInt(endMs - windowMs) * 1_000_000n).toString();
 
   try {
-    const response = await client.lokiRange(selector, startNs, endNs, limit);
-    const raw = await response.text();
+    const decoded = await readLokiBody(await client.lokiRange(selector, startNs, endNs, limit));
+    if (!decoded.ok) return decoded;
 
-    let body: unknown;
-    try {
-      body = JSON.parse(raw);
-    } catch {
-      return {
-        ok: false,
-        status: response.status,
-        error: `Loki returned a non-JSON body (HTTP ${response.status}).`,
-        raw,
-      };
-    }
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        error: `Loki request failed with HTTP ${response.status}. Check the LogQL selector syntax.`,
-        raw,
-      };
-    }
-
-    // JSON.parse("null") succeeds, so `body` may be null — optional chaining does not
+    // JSON.parse("null") succeeds, so the body may be null — optional chaining does not
     // help until after the first dereference.
+    const { body } = decoded;
     const result =
       body !== null && typeof body === "object"
         ? (body as { data?: { result?: unknown } }).data?.result
