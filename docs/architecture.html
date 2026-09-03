@@ -511,7 +511,7 @@
         </p>
         <div class="meta-row">
           <span class="chip">Claude Agent SDK</span>
-          <span class="chip">28 tools max</span>
+          <span class="chip">32 tools max</span>
           <span class="chip">2 nested loops</span>
           <span class="chip hot">pink = a human decides</span>
         </div>
@@ -520,14 +520,14 @@
       <section id="map">
         <div class="sec-head">
           <span class="eyebrow">The map</span>
-          <h2>One process, three neighbours</h2>
+          <h2>One process, four neighbours</h2>
         </div>
         <div class="spine">
           <p>
-            The agent is a single Node process that sits between an operator's terminal and three
-            outside things: the Anthropic API, a live Kinetica cluster, and — optionally — an
-            extracted support bundle on disk. Everything interesting happens inside that middle
-            lane.
+            The agent is a single Node process that sits between an operator's terminal and four
+            outside things: the Anthropic API, a live Kinetica cluster, and two optional ones — the
+            cluster's Prometheus/Loki stats stack, and an extracted support bundle on disk.
+            Everything interesting happens inside that middle lane.
           </p>
           <p>
             The most load-bearing fact about the lane is what it <em>cannot</em> reach.
@@ -540,9 +540,9 @@
         <figure>
           <div class="fig-scroll">
             <svg
-              viewBox="0 0 1080 545"
+              viewBox="0 0 1080 575"
               role="img"
-              aria-label="The admin-agent process sits between the operator's terminal on the left and the Anthropic API, Kinetica database, host manager and support bundle on the right. Inside it: the system prompt builder, the SDK query, an in-process MCP server holding four tool groups, and the output pipeline."
+              aria-label="The admin-agent process sits between the operator's terminal on the left and the Anthropic API, Kinetica database, host manager, Prometheus/Loki stats stack and support bundle on the right. Inside it: the system prompt builder, the SDK query, an in-process MCP server holding five tool groups, and the output pipeline."
             >
               <defs>
                 <marker
@@ -573,7 +573,7 @@
               <text class="t-lane" x="370" y="26">admin-agent PROCESS</text>
               <text class="t-lane" x="800" y="26">OUTSIDE</text>
 
-              <rect class="lane" x="350" y="40" width="400" height="470" rx="10"></rect>
+              <rect class="lane" x="350" y="40" width="400" height="500" rx="10"></rect>
 
               <!-- terminal column -->
               <rect class="box-hot" x="30" y="155" width="270" height="64" rx="6"></rect>
@@ -588,11 +588,11 @@
                 streamed markdown + tables
               </text>
 
-              <rect class="box" x="30" y="430" width="270" height="64" rx="6"></rect>
-              <text class="t-code" x="165" y="456" text-anchor="middle">
+              <rect class="box" x="30" y="460" width="270" height="64" rx="6"></rect>
+              <text class="t-code" x="165" y="486" text-anchor="middle">
                 reports/kinetica-diag-*.md
               </text>
-              <text class="t-sub t-dim" x="165" y="474" text-anchor="middle">
+              <text class="t-sub t-dim" x="165" y="504" text-anchor="middle">
                 URLs, headers, passwords scrubbed
               </text>
 
@@ -603,7 +603,7 @@
                 6 playbooks · 12 references · 18 catalog schemas
               </text>
               <text class="t-sub t-dim" x="550" y="119" text-anchor="middle">
-                ~17.2k tokens, built once, cached by the SDK
+                ~22–24k tokens, built once, cached by the SDK
               </text>
 
               <rect class="box-machine" x="370" y="155" width="360" height="64" rx="6"></rect>
@@ -611,10 +611,10 @@
                 Claude Agent SDK — query()
               </text>
               <text class="t-mono" x="550" y="200" text-anchor="middle">
-                sonnet | haiku | opus · fallback haiku
+                sonnet | haiku | opus | fable · fallback haiku
               </text>
 
-              <rect class="box" x="370" y="245" width="360" height="170" rx="6"></rect>
+              <rect class="box" x="370" y="245" width="360" height="200" rx="6"></rect>
               <text class="t-mono t-dim" x="550" y="267" text-anchor="middle">
                 in-process MCP server "kinetica-diagnostics"
               </text>
@@ -635,13 +635,17 @@
               <rect class="row" x="386" y="340" width="328" height="26" rx="4"></rect>
               <text class="t-mono" x="398" y="357">6 bundle, file-backed — read-only</text>
               <rect class="row" x="386" y="372" width="328" height="26" rx="4"></rect>
-              <text class="t-mono" x="398" y="389">save_report — consent asked in chat</text>
+              <text class="t-mono" x="398" y="389">
+                4 observability — GET-only, no DB credentials
+              </text>
+              <rect class="row" x="386" y="404" width="328" height="26" rx="4"></rect>
+              <text class="t-mono" x="398" y="421">save_report — consent asked in chat</text>
 
-              <rect class="box" x="370" y="430" width="360" height="64" rx="6"></rect>
-              <text class="t-code" x="550" y="456" text-anchor="middle">
+              <rect class="box" x="370" y="460" width="360" height="64" rx="6"></rect>
+              <text class="t-code" x="550" y="486" text-anchor="middle">
                 formatOutput → truncateOutput
               </text>
-              <text class="t-sub t-dim" x="550" y="474" text-anchor="middle">
+              <text class="t-sub t-dim" x="550" y="504" text-anchor="middle">
                 every tool result: head 150 + tail 50 lines
               </text>
 
@@ -649,19 +653,25 @@
               <rect class="box" x="800" y="163" width="250" height="48" rx="6"></rect>
               <text class="t-title" x="925" y="192" text-anchor="middle">Anthropic API</text>
 
-              <rect class="box" x="800" y="225" width="250" height="48" rx="6"></rect>
-              <text class="t-title" x="925" y="246" text-anchor="middle">Kinetica DB engine</text>
-              <text class="t-mono" x="925" y="264" text-anchor="middle">:9191</text>
+              <rect class="box" x="800" y="222" width="250" height="44" rx="6"></rect>
+              <text class="t-title" x="925" y="241" text-anchor="middle">Kinetica DB engine</text>
+              <text class="t-mono" x="925" y="258" text-anchor="middle">:9191</text>
 
-              <rect class="box" x="800" y="290" width="250" height="48" rx="6"></rect>
-              <text class="t-title" x="925" y="311" text-anchor="middle">Host Manager</text>
-              <text class="t-mono" x="925" y="329" text-anchor="middle">:9300 — no auth</text>
+              <rect class="box" x="800" y="274" width="250" height="44" rx="6"></rect>
+              <text class="t-title" x="925" y="293" text-anchor="middle">Host Manager</text>
+              <text class="t-mono" x="925" y="310" text-anchor="middle">:9300 — no auth</text>
 
-              <rect class="box" x="800" y="355" width="250" height="56" rx="6"></rect>
-              <text class="t-title" x="925" y="377" text-anchor="middle">
+              <rect class="box" x="800" y="326" width="250" height="44" rx="6"></rect>
+              <text class="t-title" x="925" y="345" text-anchor="middle">Prometheus · Loki</text>
+              <text class="t-mono" x="925" y="362" text-anchor="middle">
+                :9090 · :9080 — GET, no headers
+              </text>
+
+              <rect class="box" x="800" y="378" width="250" height="50" rx="6"></rect>
+              <text class="t-title" x="925" y="399" text-anchor="middle">
                 extracted support bundle
               </text>
-              <text class="t-mono" x="925" y="395" text-anchor="middle">
+              <text class="t-mono" x="925" y="416" text-anchor="middle">
                 read-only, path-confined
               </text>
 
@@ -680,8 +690,8 @@
               <path class="edge" d="M 370 187 H 358 V 312 H 300" marker-end="url(#a1)"></path>
               <text class="t-edge" x="330" y="303" text-anchor="middle">text deltas</text>
 
-              <path class="edge" d="M 370 462 H 300" marker-end="url(#a1)"></path>
-              <text class="t-edge" x="335" y="455" text-anchor="middle">save_report</text>
+              <path class="edge" d="M 370 492 H 300" marker-end="url(#a1)"></path>
+              <text class="t-edge" x="335" y="485" text-anchor="middle">save_report</text>
 
               <path
                 class="edge"
@@ -691,20 +701,22 @@
               ></path>
               <text class="t-edge" x="765" y="180" text-anchor="middle">HTTPS</text>
 
-              <path class="edge" d="M 730 330 H 766"></path>
-              <circle class="node-dot" cx="766" cy="330" r="3.5"></circle>
-              <path class="edge" d="M 766 330 V 249 H 800" marker-end="url(#a1)"></path>
-              <path class="edge" d="M 766 330 V 314 H 800" marker-end="url(#a1)"></path>
-              <path class="edge" d="M 766 330 V 383 H 800" marker-end="url(#a1)"></path>
-              <text class="t-edge" x="760" y="245" text-anchor="end">9191</text>
-              <text class="t-edge" x="760" y="308" text-anchor="end">9300</text>
-              <text class="t-edge" x="760" y="379" text-anchor="end">disk</text>
+              <path class="edge" d="M 730 372 H 766"></path>
+              <circle class="node-dot" cx="766" cy="372" r="3.5"></circle>
+              <path class="edge" d="M 766 372 V 244 H 800" marker-end="url(#a1)"></path>
+              <path class="edge" d="M 766 372 V 296 H 800" marker-end="url(#a1)"></path>
+              <path class="edge" d="M 766 372 V 348 H 800" marker-end="url(#a1)"></path>
+              <path class="edge" d="M 766 372 V 403 H 800" marker-end="url(#a1)"></path>
+              <text class="t-edge" x="760" y="240" text-anchor="end">9191</text>
+              <text class="t-edge" x="760" y="292" text-anchor="end">9300</text>
+              <text class="t-edge" x="760" y="344" text-anchor="end">9090 · 9080</text>
+              <text class="t-edge" x="760" y="399" text-anchor="end">disk</text>
 
               <path class="edge" d="M 550 132 V 155" marker-end="url(#a1)"></path>
               <path class="edge" d="M 550 219 V 245" marker-end="url(#a1)"></path>
               <path
                 class="edge"
-                d="M 550 415 V 430"
+                d="M 550 445 V 460"
                 marker-end="url(#a1)"
                 marker-start="url(#a1s)"
               ></path>
@@ -737,9 +749,9 @@
         <figure>
           <div class="fig-scroll">
             <svg
-              viewBox="0 0 1000 500"
+              viewBox="0 0 1000 570"
               role="img"
-              aria-label="Boot sequence: parse argv, load env and print banner, pick a model, authenticate with Anthropic, then fork on the bundle flag into either connectWithRetry or verifyBundle, both converging on runAgent."
+              aria-label="Boot sequence: parse argv, load env and print banner, pick a model, authenticate with Anthropic, then fork on the bundle flag into either connectWithRetry or verifyBundle, both converging on setupObservability and then runAgent."
             >
               <defs>
                 <marker
@@ -796,7 +808,7 @@
               <rect class="box" x="60" y="316" width="380" height="76" rx="6"></rect>
               <text class="t-code" x="250" y="340" text-anchor="middle">connectWithRetry()</text>
               <text class="t-sub" x="250" y="358" text-anchor="middle">
-                resolveUrl → collectCredentials → verify version
+                resolveUrl → collectCredentials (+ stats host) → verify version
               </text>
               <text class="t-sub t-dim" x="250" y="376" text-anchor="middle">
                 401 re-prompts twice · 9191 dead → probe 9300, run degraded
@@ -814,18 +826,29 @@
               <path class="edge" d="M 250 392 V 412 H 400 V 430" marker-end="url(#a2)"></path>
               <path class="edge" d="M 750 392 V 412 H 600 V 430" marker-end="url(#a2)"></path>
 
-              <rect class="box-machine" x="250" y="430" width="500" height="52" rx="6"></rect>
+              <rect class="box" x="250" y="430" width="500" height="52" rx="6"></rect>
               <text class="t-code" x="500" y="454" text-anchor="middle">
+                setupObservability({ session?, bundleSource?, statsHost? })
+              </text>
+              <text class="t-sub t-dim" x="500" y="472" text-anchor="middle">
+                stats host → gpudb.conf → DB host, each identity-probed · never blocks
+              </text>
+
+              <path class="edge" d="M 500 482 V 500" marker-end="url(#a2)"></path>
+
+              <rect class="box-machine" x="250" y="500" width="500" height="52" rx="6"></rect>
+              <text class="t-code" x="500" y="524" text-anchor="middle">
                 runAgent(session?, version, degraded, model, opts)
               </text>
-              <text class="t-sub" x="500" y="472" text-anchor="middle">
+              <text class="t-sub" x="500" y="542" text-anchor="middle">
                 requires a live session, a bundle, or both
               </text>
             </svg>
           </div>
           <figcaption>
             <b>Figure 2 — startup.</b> Live connection and support bundle are composable
-            capabilities, not exclusive modes: both branches converge on the same
+            capabilities, not exclusive modes: both branches pass through the same
+            <span class="m">setupObservability</span> and converge on the same
             <span class="m">runAgent</span>, which refuses only when it has neither.
           </figcaption>
         </figure>
@@ -839,6 +862,13 @@
             Bundle references load in <em>every</em> session, even one that never attaches a bundle,
             because the prompt is built once and a mid-session
             <span class="m">kinetica_load_bundle</span> would otherwise drive those tools blind.
+          </p>
+          <p>
+            One section of that prompt is conditional. The Observability Capability block renders
+            only when <span class="m">setupObservability</span> actually reached an endpoint, and it
+            advertises each stats tool only on the service that backs it — a Loki-only stack is
+            never told to reach for <span class="m">kinetica_tier_snapshot</span> first, because the
+            model would call it, get "not configured", and burn a turn.
           </p>
         </div>
       </section>
@@ -926,10 +956,13 @@
               </text>
 
               <!-- tool lane -->
-              <rect class="box" x="760" y="56" width="250" height="56" rx="6"></rect>
-              <text class="t-title" x="885" y="80" text-anchor="middle">in allowedTools?</text>
-              <text class="t-mono t-dim" x="885" y="98" text-anchor="middle">
-                16 diagnostic · save_report
+              <rect class="box" x="760" y="56" width="250" height="70" rx="6"></rect>
+              <text class="t-title" x="885" y="78" text-anchor="middle">in allowedTools?</text>
+              <text class="t-mono t-dim" x="885" y="95" text-anchor="middle">
+                16 diagnostic · 4 observability
+              </text>
+              <text class="t-mono t-dim" x="885" y="111" text-anchor="middle">
+                alter_table_columns · save_report
               </text>
 
               <rect class="box-hot" x="760" y="152" width="250" height="64" rx="6"></rect>
@@ -948,7 +981,7 @@
               <rect class="box" x="760" y="348" width="250" height="56" rx="6"></rect>
               <text class="t-title" x="885" y="372" text-anchor="middle">Kinetica</text>
               <text class="t-mono" x="885" y="390" text-anchor="middle">
-                :9191 REST · :9300 host mgr
+                :9191 · :9300 · stats :9090 / :9080
               </text>
 
               <rect class="box" x="760" y="444" width="250" height="64" rx="6"></rect>
@@ -992,7 +1025,7 @@
                 stop_reason: tool_use
               </text>
 
-              <path class="edge-hot" d="M 885 112 V 152" marker-end="url(#a3h)"></path>
+              <path class="edge-hot" d="M 885 126 V 152" marker-end="url(#a3h)"></path>
               <text class="t-edge t-hot" x="895" y="137">not listed</text>
               <path class="edge-hot" d="M 885 216 V 252" marker-end="url(#a3h)"></path>
               <text class="t-edge t-hot" x="895" y="239">allow</text>
@@ -1129,6 +1162,14 @@
             <strong>after Round 3 the report is mandatory</strong>, gaps and all. An investigation
             that ends without a report is a failure mode, so the prompt closes that door explicitly.
           </p>
+          <p>
+            The template's section order is fixed, and one section exists purely to stop a bad
+            inference: <strong>Timeline</strong>, sitting between Evidence Collected and Evidence
+            Gaps, is the only place events from different sources are put in sequence, and its axis
+            is UTC. Every row names the tool or file it came from and the stamp exactly as observed.
+            A stamp that cannot be converted is written <span class="m">unknown</span> and the
+            missing offset goes to Evidence Gaps — the next section explains why that matters.
+          </p>
         </div>
 
         <figure>
@@ -1262,6 +1303,104 @@
 
       <hr class="rule" />
 
+      <section id="honesty">
+        <div class="sec-head">
+          <span class="eyebrow">What the evidence can honestly say</span>
+          <h2>Two ways to be confidently wrong</h2>
+        </div>
+        <div class="spine">
+          <p>
+            The worst output this agent can produce is not an error. It is a clean report that reads
+            as authoritative and is wrong, because a tool returned something ambiguous and the model
+            resolved the ambiguity by guessing. Two of those were found by running it against a real
+            cluster, and both had the same shape:
+            <em>the tool knew less than its output implied</em>.
+          </p>
+          <p>
+            The first is time. Evidence arrives stamped by several clocks that nothing reconciles. A
+            support bundle's rolling logs carry the host's local wall time with no zone marker; the
+            same bundle's Loki exports carry UTC, because the exporter replaced the original stamp.
+            The bundle records no offset between them, so the same event sits at two wall-clock
+            times and lexical order across the two is meaningless. Every parsed line now carries the
+            clock that wrote it, the log tools report which clocks a result spans, and a result
+            spanning both says so instead of being silently ordered.
+          </p>
+          <p>
+            The second is absence. Loki holds two populations — the structured events the database
+            pushes about itself, and the actual rank log lines, which arrive only when the cluster
+            runs promtail. A health check reported eleven dimensions healthy having never read a log
+            line, because three separate places described the log stream as conditional and the
+            model read a condition it could not evaluate as permission to skip. Worse, an earlier
+            run reported promtail as disabled on a cluster where it was on and shipping tens of
+            thousands of lines an hour: the query had asked for error-level lines, the cluster had
+            no errors, and an empty result was read as a missing capability.
+          </p>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>The guess</th>
+                <th>Why it looked reasonable</th>
+                <th>What the tool returns now</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>These two log lines happened seconds apart</td>
+                <td>
+                  Both stamps are fixed-width and sort lexically, so ordering them looks like string
+                  comparison — and within one log family it is
+                </td>
+                <td>
+                  <span class="m">timestamp_zone</span> per result, a per-row zone column when a
+                  result mixes clocks, and a note refusing the comparison
+                </td>
+              </tr>
+              <tr>
+                <td>Promtail is off, so there are no logs to read</td>
+                <td>
+                  An empty logs result beside a populated events result looks like a missing
+                  capability — the prompt even suggested that comparison
+                </td>
+                <td>
+                  A measured verdict from Loki's label set:
+                  <span class="m">shipping</span>, <span class="m">absent</span>, or
+                  <span class="m">could not verify</span> — never an inference
+                </td>
+              </tr>
+              <tr>
+                <td>No error events, so the logs are clean</td>
+                <td>
+                  Events are the default stream and they are genuinely quiet on a healthy cluster
+                </td>
+                <td>
+                  Events say plainly that they are telemetry, contain no log line, and that none
+                  have been read yet
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <span class="eyebrow">Where the line falls</span>
+          <p>
+            These two are not code rails, and that is the point of splitting them from the next
+            section. Provenance is code — the parser tags every stamp, the label probe measures
+            promtail, and the prompt advertises a stats-stack claim only for an endpoint actually
+            reached. The prohibition itself is prose, because "do not order events across clocks
+            unless the offset is known" is a claim about the model's reasoning that no assertion can
+            check. Code supplies the fact; the prompt supplies the norm. What made both bugs
+            possible was a tool stating a condition the caller could not evaluate — and an
+            unevaluatable condition is read as permission, not as a prompt to go and check.
+          </p>
+        </div>
+      </section>
+
+      <hr class="rule" />
+
       <section id="rails">
         <div class="sec-head">
           <span class="eyebrow">Guardrails</span>
@@ -1336,8 +1475,8 @@
               <tr>
                 <td>Prompt bloat</td>
                 <td>
-                  <span class="m">checkPromptBudget()</span> warns past 20k tokens; the corpus
-                  currently sits near 17.2k
+                  <span class="m">checkPromptBudget()</span> warns past 30k tokens; a live session
+                  sits near 22k, or 24k with a stats stack reachable
                 </td>
                 <td>agent/prompt-budget.ts</td>
               </tr>
@@ -1345,10 +1484,28 @@
                 <td>Credential leakage</td>
                 <td>
                   Credentials live in a closure; the password is never written to
-                  <span class="m">.env</span>; reports are scrubbed and mutation audit lines redact
-                  config payloads
+                  <span class="m">.env</span>; reports are scrubbed, bundle config, sysinfo and log
+                  output are redacted, and mutation audit lines redact config payloads
                 </td>
                 <td>report/scrub.ts · tools/audit-redact.ts</td>
+              </tr>
+              <tr>
+                <td>Third parties never see DB credentials</td>
+                <td>
+                  The stats-stack client is GET-only and sends no headers at all. It is deliberately
+                  not built on <span class="m">KineticaSession</span>, whose Basic header would
+                  otherwise ride along on every Prometheus and Loki query
+                </td>
+                <td>observability/ObservabilityClient.ts</td>
+              </tr>
+              <tr>
+                <td>Claims the session cannot support</td>
+                <td>
+                  Observability tools are advertised in the prompt only for an endpoint that was
+                  reached and identity-probed, so the model is never told about a tool that can only
+                  answer "not configured"
+                </td>
+                <td>agent/observability-section.ts</td>
               </tr>
               <tr>
                 <td>Bundle path escape</td>
@@ -1365,10 +1522,11 @@
         <div class="note">
           <span class="eyebrow">The composability point</span>
           <p>
-            A live connection and a support bundle are capabilities, not modes. A session can hold
-            either or both, and the tool set is their union — which is what lets the agent read what
-            a rank logged at 03:14 last Tuesday and then check whether that condition still holds
-            right now. Bundle tools are always registered against a lazy holder, so
+            A live connection, a support bundle and a reachable stats stack are capabilities, not
+            modes. A session can hold any combination, and the tool set is their union — which is
+            what lets the agent read what a rank logged at 03:14 last Tuesday and then check whether
+            that condition still holds right now. Bundle tools are always registered against a lazy
+            holder, so
             <span class="m">kinetica_load_bundle</span> can attach one mid-conversation even though
             the SDK fixed the tool set when <span class="m">query()</span> was created.
           </p>
@@ -1378,7 +1536,7 @@
       <footer>
         <span>admin-agent v0.2.5</span>
         <span>Claude Agent SDK</span>
-        <span>16 diagnostic · 5 mutation · 6 bundle · save_report</span>
+        <span>16 diagnostic · 5 mutation · 6 bundle · 4 observability · save_report</span>
       </footer>
     </div>
   </body>
