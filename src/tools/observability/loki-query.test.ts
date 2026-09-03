@@ -418,14 +418,147 @@ describe("promtail log lines", () => {
       expect(r.note).toMatch(/selector|window|widen/i);
     });
 
-    it("names the promtail prerequisite when a logs query finds nothing", async () => {
-      // Measured: enable_promtail is written to gpudb.conf but the running process does
-      // not re-read it — the stats stack must be restarted before anything ships.
+    it("does not blame promtail for an empty logs result it could not verify", async () => {
+      // clientFor's label probe answers nothing, so presence is unknown. Asserting the
+      // prerequisite here is the bug this replaced: it read as "promtail is off".
+      // The verified cases live in "promtail presence on an empty logs result" below.
       const r = await lokiQuery(clientFor([]), { stream: "logs" });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      expect(r.note).toMatch(/enable_promtail/i);
-      expect(r.note).toMatch(/restart/i);
+      expect(r.note).toMatch(/could not verify/i);
+      expect(r.note).not.toMatch(/promtail is enabled and shipping/i);
     });
+  });
+});
+
+describe("promtail presence on an empty logs result", () => {
+  /** A logs client whose range query is empty and whose label probe is scripted. */
+  function emptyLogsClient(labels?: unknown, labelStatus = 200): ObservabilityClient {
+    return {
+      lokiUrl: "http://statshost:9080",
+      lokiRange: vi.fn().mockResolvedValue(new Response(JSON.stringify(streams([])))),
+      lokiLabels: vi
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify(labels), { status: labelStatus })),
+      promInstant: vi.fn(),
+      promRange: vi.fn(),
+      promRules: vi.fn(),
+      promAlerts: vi.fn(),
+      promConfig: vi.fn(),
+    };
+  }
+
+  const shipping = { status: "success", data: ["cluster", "job", "app", "level"] };
+  const noPromtail = { status: "success", data: ["cluster", "class", "source"] };
+
+  it("reports promtail as SHIPPING when Loki holds the job label, and never blames config", async () => {
+    const r = await lokiQuery(emptyLogsClient(shipping), { stream: "logs", severity: "error" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).toMatch(/promtail is enabled and shipping/i);
+    // The whole bug: an empty FILTERED result was reported as promtail being off.
+    expect(r.note).not.toMatch(/enable_promtail/);
+    expect(r.note).not.toMatch(/off by default/i);
+  });
+
+  it("names the filters to drop when a narrowed logs query comes back empty", async () => {
+    const r = await lokiQuery(emptyLogsClient(shipping), {
+      stream: "logs",
+      severity: "error",
+      job: "gpudb_log",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).toMatch(/severity/);
+    expect(r.note).toMatch(/job/);
+  });
+
+  it("says an exact severity match is not a threshold, so worse levels are excluded", async () => {
+    const r = await lokiQuery(emptyLogsClient(shipping), { stream: "logs", severity: "error" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).toMatch(/exact|not a threshold/i);
+  });
+
+  it("recommends the config fix ONLY when no promtail stream exists at all", async () => {
+    const r = await lokiQuery(emptyLogsClient(noPromtail), { stream: "logs" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).toMatch(/enable_promtail/);
+    expect(r.note).toMatch(/restart/i);
+  });
+
+  it("refuses to conclude either way when the label probe cannot answer", async () => {
+    for (const client of [
+      emptyLogsClient(noPromtail, 500),
+      emptyLogsClient({ status: "success" }), // quiet Loki: success with no data array
+      emptyLogsClient("not json"),
+    ]) {
+      const r = await lokiQuery(client, { stream: "logs" });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.note).toMatch(/could not verify/i);
+      expect(r.note).not.toMatch(/promtail is enabled and shipping/i);
+    }
+  });
+
+  it("survives a label probe that throws", async () => {
+    const client = {
+      lokiUrl: "http://statshost:9080",
+      lokiRange: vi.fn().mockResolvedValue(new Response(JSON.stringify(streams([])))),
+      lokiLabels: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
+    } as unknown as ObservabilityClient;
+    const r = await lokiQuery(client, { stream: "logs" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).toMatch(/could not verify/i);
+  });
+
+  it("probes only for an empty LOGS result — not for events, all, or a non-empty one", async () => {
+    const events = emptyLogsClient(shipping);
+    await lokiQuery(events, {});
+    expect(events.lokiLabels).not.toHaveBeenCalled();
+
+    const all = emptyLogsClient(shipping);
+    await lokiQuery(all, { stream: "all" });
+    expect(all.lokiLabels).not.toHaveBeenCalled();
+
+    const nonEmpty = {
+      lokiUrl: "http://statshost:9080",
+      lokiRange: vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify(
+              streams([{ stream: RANK_LOG_LABELS, values: [["1788293757196198000", "x"]] }]),
+            ),
+          ),
+        ),
+      lokiLabels: vi.fn(),
+    } as unknown as ObservabilityClient;
+    await lokiQuery(nonEmpty, { stream: "logs" });
+    expect(nonEmpty.lokiLabels).not.toHaveBeenCalled();
+  });
+});
+
+describe("the events note points at the logs the agent has not read", () => {
+  const stream = {
+    stream: SQL_LABELS,
+    values: [["1788293741835027000", SQL_BODY]],
+  };
+
+  it("states plainly that rank log lines were NOT read", async () => {
+    const r = await lokiQuery(clientFor([stream]), {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).toMatch(/have not/i);
+    expect(r.note).toMatch(/stream="logs"/);
+  });
+
+  it("does not make the logs read conditional on promtail, which it cannot know here", async () => {
+    const r = await lokiQuery(clientFor([stream]), {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.note).not.toMatch(/If the cluster has promtail enabled/i);
   });
 });

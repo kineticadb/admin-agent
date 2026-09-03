@@ -35,9 +35,13 @@ export const OBSERVABILITY_TOOL_CATALOG: Readonly<Record<ObservabilityToolName, 
       whenToUse: "Time-shape questions, host-level pressure, anything tier_snapshot omits",
     },
     kinetica_loki_query: {
+      // Both populations, because this row IS the agent's map of available evidence:
+      // describing only events here produced a health report that called every dimension
+      // OK without ever reading a rank log line.
       reveals:
-        "Structured DB events: per-statement SQL telemetry (jobid/user/resource_group/elapsed), request failures with attribution, rank status transitions, config and mode changes",
-      whenToUse: "Query contention, who ran what, when a rank changed state, recent errors",
+        'stream="events": per-statement SQL telemetry (jobid/user/resource_group/elapsed), request failures with attribution, rank status transitions, config and mode changes. stream="logs": the actual rank log lines, plus SQL-engine/graph/tomcat/workbench logs no other live tool can reach — and it reports whether promtail is shipping them',
+      whenToUse:
+        'Query contention, who ran what, when a rank changed state, recent errors — then ALWAYS stream="logs" as well: events are telemetry, not logs, and only a logs read (or its promtail verdict) lets you speak about log contents',
     },
   };
 

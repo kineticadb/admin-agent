@@ -353,34 +353,99 @@ function flatten(result: readonly unknown[], limit: number): readonly LokiEntry[
 }
 
 /**
- * Guidance for an empty result, specific to what was being read.
+ * Whether Loki holds promtail streams at all — MEASURED, not inferred.
  *
- * A logs query returning nothing is usually not a retention problem but a configuration
- * one, and the fix has a step operators miss: `enable_promtail` is written to
- * `gpudb.conf`, but the running process never re-reads that file, so nothing ships until
- * the stats stack is restarted. Measured — the setting sat enabled with zero log lines in
- * Loki until `kinetica_stats` was restarted, at which point ingest went from 282 lifetime
- * lines to ~60k/hour.
+ * The old guidance told the agent to compare an empty logs result against a non-empty
+ * events one and call promtail the difference. That inference is invalid whenever the
+ * logs query carried a filter, and it produced a false "promtail is not enabled" report
+ * on a cluster where it was on: the query asked for level="error" and the cluster simply
+ * had no errors. Only the label set can answer the question, so it is read instead.
  */
+type PromtailPresence = "shipping" | "absent" | "unknown";
+
+/** Label carried by every promtail stream and by no event stream. */
+const PROMTAIL_LABEL = "job";
+
+/**
+ * Ask Loki which label names it holds.
+ *
+ * `/loki/api/v1/labels` defaults to a ~6-hour window, which is ample: promtail ships
+ * ~60k lines/hour when it is running, so a live promtail cannot be absent from it. A
+ * quiet Loki can answer `{"status":"success"}` with no `data` at all, which is reported
+ * as "unknown" rather than "absent" — an unanswered probe is not evidence.
+ */
+async function probePromtail(client: ObservabilityClient): Promise<PromtailPresence> {
+  try {
+    const decoded = await readLokiBody(await client.lokiLabels());
+    if (!decoded.ok) return "unknown";
+    const { body } = decoded;
+    const data =
+      body !== null && typeof body === "object" ? (body as { data?: unknown }).data : undefined;
+    if (!Array.isArray(data)) return "unknown";
+    return data.includes(PROMTAIL_LABEL) ? "shipping" : "absent";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Convenience filters that could have emptied a logs result on their own. */
+function activeFilters(input: LokiQueryInput): readonly string[] {
+  return [
+    input.selector ? "selector" : undefined,
+    input.job ? "job" : undefined,
+    input.severity ? "severity" : undefined,
+    input.source ? "source" : undefined,
+    input.contains ? "contains" : undefined,
+  ].filter((f): f is string => f !== undefined);
+}
+
+/**
+ * Guidance for an empty logs result, keyed on what the probe actually established.
+ *
+ * `enable_promtail` is only mentioned when no promtail stream exists, because that is the
+ * only case it can explain. The fix then has a step operators miss: the setting is written
+ * to `gpudb.conf` and the running process never re-reads it, so nothing ships until the
+ * stats stack restarts — measured, ingest went from 282 lifetime lines to ~60k/hour on
+ * restart alone, with the setting already true.
+ */
+function emptyLogsNote(base: string, presence: PromtailPresence, input: LokiQueryInput): string {
+  const filters = activeFilters(input);
+  const severityTrap = filters.includes("severity")
+    ? ` \`severity\` on logs is an EXACT \`level\` match, not a threshold, so severity="error" excludes fatal and uerr lines.`
+    : "";
+  const nextMove =
+    filters.length > 0
+      ? ` This query was narrowed by ${filters.join(", ")} — drop ${filters.length === 1 ? "it" : "them"} and re-run.${severityTrap}`
+      : ` The query was unfiltered, so widen minutes_back.`;
+
+  if (presence === "shipping") {
+    return `${base} Loki DOES hold promtail streams (the \`${PROMTAIL_LABEL}\` label is present), so promtail is enabled and shipping — this window or filter simply matched nothing. Do NOT report promtail as disabled.${nextMove}`;
+  }
+  if (presence === "absent") {
+    return `${base} Loki holds NO promtail streams (no \`${PROMTAIL_LABEL}\` label), so no rank log lines are being shipped. \`enable_promtail\` must be true in gpudb.conf AND the stats stack restarted afterwards — the running process never re-reads the file, so an operator who set it without restarting sees exactly this. Verify the setting with kinetica_show_configuration before reporting it as off.`;
+  }
+  return `${base} Could not verify whether promtail is shipping — the Loki label probe did not answer. Do not conclude it is off; read \`enable_promtail\` with kinetica_show_configuration.${nextMove}`;
+}
+
+/** Guidance for an empty result, specific to what was being read. */
 function emptyNote(selector: string, minutesBack: number, kind: StreamKind): string {
   const base = `No entries for \`${selector}\` in the last ${minutesBack} minutes.`;
   if (kind === "events") {
     return `${base} Events are pushed live with no backfill, and Loki retention is short (hours to days) — widen minutes_back, or use a support bundle for older evidence.`;
   }
-  if (kind === "all") {
-    // "all" spans both populations, so emptiness implicates the selector or the window,
-    // never promtail — saying otherwise sends the agent after a config problem that
-    // cannot be the cause here.
-    return `${base} This matched neither events nor log lines, so the selector or the window is the likely problem rather than any missing capability — widen minutes_back, or relax the filters (a \`contains\` substring is the usual culprit).`;
-  }
-  return `${base} Either nothing matched in this window, or this cluster ships no rank log lines at all: promtail is off by default. \`enable_promtail\` must be true in gpudb.conf AND the stats stack restarted afterwards (the running process does not re-read the file) before anything appears here. Check with stream="events", which works regardless — if events are present and logs are not, promtail is the missing piece.`;
+  // "all" spans both populations, so emptiness implicates the selector or the window,
+  // never promtail.
+  return `${base} This matched neither events nor log lines, so the selector or the window is the likely problem rather than any missing capability — widen minutes_back, or relax the filters (a \`contains\` substring is the usual culprit).`;
 }
 
 /** Caveats for a non-empty result, specific to what was read. */
 function resultNote(kind: StreamKind): string {
   const head = "Newest first, times UTC HH:MM:SS.";
   if (kind === "events") {
-    return `${head} These are structured EVENTS, not log lines. If the cluster has promtail enabled, stream="logs" reaches the actual rank logs; for stack traces or full multi-line SQL, use a support bundle.`;
+    // Was "If the cluster has promtail enabled, stream=logs reaches …". The condition is
+    // one this call cannot evaluate, so it read as permission to skip — and a health
+    // check reported every dimension OK having never looked at a log line.
+    return `${head} These are structured EVENTS: telemetry the database pushes about itself, containing NO log lines, stack traces or component output. You have not read any rank log lines — run stream="logs" for those; it also reports whether promtail is shipping them, so do not assume either way. For stack traces or full multi-line SQL, use a support bundle.`;
   }
   return `${head} Log lines carry \`job\` and \`source\` (the rank); events carry \`class\`. Promtail is LINE-oriented, so a multi-line record — notably \`Executing SQL:\` — is split, and its continuation lines land in a SEPARATE stream with no \`app\` label and ingest-time timestamps, so they do NOT reliably pair with their parent. Report the first line as the first line, never as the whole statement; the complete text is only in a support bundle's rolling logs.`;
 }
@@ -417,15 +482,25 @@ export async function lokiQuery(
         ? (body as { data?: { result?: unknown } }).data?.result
         : undefined;
     const entries = Array.isArray(result) ? flatten(result, limit) : [];
+    const minutesBack = input.minutes_back ?? DEFAULT_MINUTES_BACK;
+
+    // One extra GET, and only where the ambiguity actually is: an empty logs result is
+    // the single case where "is promtail on?" decides what the emptiness means.
+    let note: string;
+    if (entries.length > 0) {
+      note = resultNote(kind);
+    } else if (kind === "logs") {
+      const base = `No entries for \`${selector}\` in the last ${minutesBack} minutes.`;
+      note = emptyLogsNote(base, await probePromtail(client), input);
+    } else {
+      note = emptyNote(selector, minutesBack, kind);
+    }
 
     return {
       ok: true,
       data: { selector, entry_count: entries.length, entries },
       rowCount: entries.length,
-      note:
-        entries.length === 0
-          ? emptyNote(selector, input.minutes_back ?? DEFAULT_MINUTES_BACK, kind)
-          : resultNote(kind),
+      note,
     };
   } catch (error) {
     return {

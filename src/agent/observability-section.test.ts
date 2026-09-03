@@ -86,3 +86,22 @@ describe("buildObservabilitySection", () => {
     });
   });
 });
+
+describe("reading rank log lines is not optional", () => {
+  const lokiOnly = { lokiUrl: "http://statshost:9080" } as unknown as ObservabilityClient;
+
+  it("requires a logs read before any claim that logs or errors were checked", () => {
+    const section = buildObservabilitySection(lokiOnly);
+    expect(section).toMatch(/stream="logs"/);
+    // The completeness rule: events alone do not cover the log lines.
+    expect(section).toMatch(/have not (read|checked).*log lines|not checked the logs/i);
+  });
+
+  it("stops framing the logs stream as available only if promtail happens to be on", () => {
+    const section = buildObservabilitySection(lokiOnly);
+    // "ONLY when enable_promtail=true ... off by default" read as "probably unavailable,
+    // skip it". The tool reports the verdict, so the agent must ask rather than assume.
+    expect(section).not.toMatch(/ONLY when the cluster has/);
+    expect(section).toMatch(/always run it|run it and read the verdict|the tool tells you/i);
+  });
+});
