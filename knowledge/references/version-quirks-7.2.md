@@ -14,6 +14,8 @@ keywords:
     ki_version,
     rebalance,
   ]
+summary: "What fails on 7.2.x: unsupported commands (ANALYZE TABLE), missing tables (`ki_tables`, `ki_version`), correct `ki_columns` names, sentinel values, endpoint preconditions."
+read_when: "When a tool or SQL call fails unexpectedly, before retrying — and before proposing any command you have not verified on this version."
 ---
 
 ## Overview

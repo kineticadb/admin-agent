@@ -19,6 +19,8 @@ keywords:
     decimal,
     numeric,
   ]
+summary: "PostgreSQL-baseline mental model plus the false-friends table: SQL that looks valid but FAILS in Kinetica (TRY_CAST, backtick quoting, timestamp arithmetic, NUMERIC)."
+read_when: "Before writing ANY SQL you hand to the operator or run as a mutation."
 ---
 
 ## Mental Model — Start from PostgreSQL

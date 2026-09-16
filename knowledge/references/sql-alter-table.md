@@ -13,6 +13,8 @@ keywords:
     shard-key,
     kinetica-alter-table-columns,
   ]
+summary: "Kinetica 7.2 ALTER TABLE grammar: ALTER/MODIFY COLUMN, property flags (DICT, TEXT_SEARCH, COMPRESS), shard-key immutability, and dependent views being dropped."
+read_when: "Before composing any ALTER TABLE or calling `kinetica_alter_table_columns`."
 ---
 
 ## Overview

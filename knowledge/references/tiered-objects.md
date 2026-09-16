@@ -2,6 +2,8 @@
 title: ki_tiered_objects Reference
 category: storage
 keywords: [tiered, tier, storage, RAM, PERSIST, DISK, VRAM, eviction, memory pressure]
+summary: "`ki_tiered_objects` schema, the string `id` format (NOT a numeric OID, so no join to `ki_objects`), the tier hierarchy, ready-made diagnostic queries, and gotchas."
+read_when: "Before querying `ki_tiered_objects` or reasoning about which objects sit in which tier."
 ---
 
 ## Overview

@@ -182,3 +182,84 @@ describe("loadBundleReferences", () => {
     expect(refs.some((r) => /Support Bundle/i.test(r.title))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Disclosure metadata — id, kind, and the frontmatter fields the cards render
+// ---------------------------------------------------------------------------
+
+describe("reference loaders — disclosure metadata", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "references-meta-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("sets id from the filename stem and kind to 'reference'", async () => {
+    await writeFile(
+      join(tmpDir, "gpudb-conf.md"),
+      `---
+title: gpudb.conf Configuration Reference
+---
+
+Body`,
+    );
+
+    const [ref] = await loadReferences(tmpDir);
+    expect(ref.id).toBe("gpudb-conf");
+    expect(ref.kind).toBe("reference");
+  });
+
+  it("sets kind to 'bundle-reference' when loaded from the bundle path", async () => {
+    await writeFile(
+      join(tmpDir, "support-bundle.md"),
+      `---
+title: Support Bundle Layout
+---
+
+Body`,
+    );
+
+    const [ref] = await loadBundleReferences(tmpDir);
+    expect(ref.id).toBe("support-bundle");
+    expect(ref.kind).toBe("bundle-reference");
+  });
+
+  it("carries summary, read_when and disclosure through from frontmatter", async () => {
+    await writeFile(
+      join(tmpDir, "mutation-safety.md"),
+      `---
+title: Mutation Safety Rules
+summary: "What you must never propose: destructive endpoints and secret-bearing keys."
+read_when: Before Round 4.
+disclosure: inline
+---
+
+Body`,
+    );
+
+    const [ref] = await loadReferences(tmpDir);
+    expect(ref.summary).toBe(
+      "What you must never propose: destructive endpoints and secret-bearing keys.",
+    );
+    expect(ref.readWhen).toBe("Before Round 4.");
+    expect(ref.disclosure).toBe("inline");
+  });
+
+  it("leaves disclosure undefined when frontmatter omits it", async () => {
+    await writeFile(
+      join(tmpDir, "plain.md"),
+      `---
+title: Plain
+---
+
+Body`,
+    );
+
+    const [ref] = await loadReferences(tmpDir);
+    expect(ref.disclosure).toBeUndefined();
+  });
+});

@@ -51,6 +51,7 @@
     "dev": "tsx src/cli/index.ts",
     "eval": "tsx src/evals/report-format.eval.ts",
     "eval:report-format": "tsx src/evals/report-format.eval.ts",
+    "eval:knowledge-retrieval": "tsx src/evals/knowledge-retrieval.eval.ts",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {

@@ -144,8 +144,18 @@ describe("buildSystemPrompt", () => {
       expect(result).toContain("### Common Failure Patterns");
     });
 
-    it("formats each playbook with bold title heading", () => {
+    it("renders an on-demand playbook as a card, not as a body", () => {
       const result = buildSystemPrompt(undefined, undefined, TEST_PLAYBOOKS);
+      // The card IS the Symptoms list — the natural retrieval trigger. Detection,
+      // Root Cause and Remediation arrive through kinetica_knowledge_read.
+      expect(result).toContain("| gpu-out-of-memory | critical |");
+      expect(result).toContain("| stale-rank | critical |");
+      expect(result).not.toContain("**GPU Out-of-Memory:**");
+    });
+
+    it("renders an inline playbook in full, in the original format", () => {
+      const inlined = TEST_PLAYBOOKS.map((p) => ({ ...p, disclosure: "inline" as const }));
+      const result = buildSystemPrompt(undefined, undefined, inlined);
       expect(result).toContain("**GPU Out-of-Memory:**");
       expect(result).toContain("**Stale Rank (Rank Not Responding):**");
     });
@@ -269,17 +279,22 @@ describe("buildSystemPrompt", () => {
       expect(remediationIdx).toBeLessThan(rootCauseIdx);
     });
 
+    // These assert the REPORT TEMPLATE's section order, so they anchor on the "## "
+    // heading rather than on the bare phrase: the protocol text above the template
+    // legitimately names these sections in prose ("name the ids you read under
+    // Evidence Collected"), and a bare indexOf would score that mention instead.
     it("orders sections: Root Cause Analysis before Evidence Collected", () => {
       const result = buildSystemPrompt();
-      const rootCauseIdx = result.toLowerCase().indexOf("root cause analysis");
-      const evidenceCollectedIdx = result.toLowerCase().indexOf("evidence collected");
+      const rootCauseIdx = result.indexOf("## Root Cause Analysis");
+      const evidenceCollectedIdx = result.indexOf("## Evidence Collected");
+      expect(rootCauseIdx).toBeGreaterThan(-1);
       expect(rootCauseIdx).toBeLessThan(evidenceCollectedIdx);
     });
 
     it("orders sections: Evidence Collected before Evidence Gaps", () => {
       const result = buildSystemPrompt();
-      const evidenceCollectedIdx = result.toLowerCase().indexOf("evidence collected");
-      const evidenceGapsIdx = result.toLowerCase().indexOf("evidence gaps");
+      const evidenceCollectedIdx = result.indexOf("## Evidence Collected");
+      const evidenceGapsIdx = result.indexOf("## Evidence Gaps");
       expect(evidenceCollectedIdx).toBeLessThan(evidenceGapsIdx);
     });
   });
@@ -649,99 +664,54 @@ describe("buildSystemPrompt", () => {
     });
   });
 
-  // ALTER TABLE and CREATE INDEX guidance lives in knowledge/references/
-  // (sql-alter-table.md and sql-create-index.md). These tests verify the
-  // real reference files on disk still carry the syntax rules and that the
-  // text reaches the final prompt via the reference loader pipeline.
+  // The SQL references (sql-alter-table, sql-create-index, sql-dialect) are on-demand:
+  // the prompt advertises each as a card carrying its read-when trigger, and the body
+  // arrives through kinetica_knowledge_read. The prompt's job is therefore that the
+  // agent knows the document exists and WHEN it is obliged to read it. That the
+  // documents still carry their syntax rules is asserted against the real files in
+  // src/knowledge/corpus.test.ts, where a card summary cannot accidentally satisfy it.
 
-  describe("ALTER TABLE column property guidance (via real references)", () => {
-    it("contains ALTER TABLE column property syntax", async () => {
+  describe("SQL references are advertised as cards with their triggers", () => {
+    const cardFor = async (id: string) => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("ALTER TABLE");
-      expect(prompt).toContain("ALTER COLUMN");
-      expect(prompt).toContain("DICT");
+      const row = prompt.split("\n").find((l) => l.startsWith(`| ${id} |`));
+      expect(row, `no card row for ${id}`).toBeDefined();
+      return row!;
+    };
+
+    it("advertises sql-alter-table, triggered before any ALTER TABLE", async () => {
+      expect(await cardFor("sql-alter-table")).toMatch(/ALTER TABLE/);
     });
 
-    it("shows correct DICT syntax inside parentheses", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("VARCHAR(size, DICT)");
+    it("advertises sql-create-index, triggered before proposing an index", async () => {
+      expect(await cardFor("sql-create-index")).toMatch(/index/i);
     });
 
-    it("shows MODIFY COLUMN as equivalent syntax", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("MODIFY COLUMN");
+    it("advertises sql-dialect, triggered before ANY SQL", async () => {
+      // The strongest trigger in the corpus: SQL that looks valid and fails at runtime
+      // is the failure this card exists to prevent, so the trigger is unconditional.
+      expect(await cardFor("sql-dialect")).toMatch(/before writing any sql/i);
     });
 
-    it("lists available column properties", async () => {
+    it("names the read tool so a triggered card leads somewhere", async () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("TEXT_SEARCH");
-      expect(prompt).toContain("COMPRESS");
+      expect(prompt).toContain("kinetica_knowledge_read");
     });
 
-    it("warns about dependent views being dropped", async () => {
+    it("keeps the SQL bodies OUT of the prompt", async () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toMatch(/dependent.{0,30}(views|materialized)/i);
-    });
-  });
-
-  describe("CREATE INDEX syntax guidance (via real references)", () => {
-    it("contains CREATE INDEX syntax", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("CREATE INDEX");
-      expect(prompt).toContain("index_name ON");
+      expect(prompt).not.toContain("VARCHAR(size, DICT)");
+      expect(prompt).not.toContain("CREATE INDEX index_name ON");
     });
 
-    it("shows correct syntax with index name before ON", async () => {
+    it("hooks the SQL reads to Round 4, where a mutation is composed", async () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("CREATE INDEX index_name ON");
-    });
-
-    it("warns that index name is required before ON", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toMatch(/index name.{0,30}REQUIRED/i);
-    });
-
-    it("shows DROP INDEX syntax", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("DROP INDEX");
-    });
-
-    it("recommends checking ki_indexes before creation", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("ki_catalog.ki_indexes");
-    });
-  });
-
-  describe("SQL dialect / false-friends guidance (via real references)", () => {
-    it("establishes the PostgreSQL-compatible baseline", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("PostgreSQL-compatible");
-    });
-
-    it("flags TRY_CAST / SAFE_CAST as invalid and names the valid alternative", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("TRY_CAST");
-      expect(prompt).toContain("SAFE_CAST");
-      expect(prompt).toMatch(/CAST\(x AS t\)|CONVERT\(x, t\)/);
-    });
-
-    it("warns against timestamp subtraction and backtick identifiers", async () => {
-      const refs = await loadReferences();
-      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("DATEDIFF");
-      expect(prompt).toMatch(/double quotes/i);
+      expect(prompt).toMatch(/Read first, then propose/i);
+      expect(prompt).toContain("sql-dialect");
     });
   });
 
@@ -771,26 +741,43 @@ describe("buildSystemPrompt", () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
       expect(prompt).toContain("Worker restart");
-      expect(prompt).toContain("service-management.md");
+      // Stronger than a bare cross-reference: the bullet must ORDER the read rather than
+      // answer the question itself. An inline copy of the commands satisfies the agent and
+      // the mandatory read stops firing — see the mutation-safety test in corpus.test.ts.
+      // \s+ because the corpus is hard-wrapped and the phrase spans a line break.
+      expect(prompt).toMatch(/read\s+`service-management`\s+with\s+`kinetica_knowledge_read`/i);
     });
 
-    it("marks `gadmin` service-control commands as wrong rather than prescribing them", async () => {
+    // service-management is on-demand with a MANDATORY trigger. The commands it
+    // sanctions are asserted against the real file in src/knowledge/corpus.test.ts;
+    // what matters here is that the prompt never prescribes a `gadmin` command and
+    // that the agent is obliged to read the document before writing a remediation
+    // step that touches a service. The document exists because the agent DID emit
+    // `gadmin restart rank 2`.
+    it("never prescribes a `gadmin` service-control command", async () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      // The reference quotes the bogus commands only inside its "never emit" table.
-      expect(prompt).toContain("WRONG — Never Emit These");
-      expect(prompt).toContain("`gadmin` is not a service-control CLI");
-      // No instruction anywhere tells the operator to RUN one.
       expect(prompt).not.toMatch(/run `gadmin/);
       expect(prompt).not.toMatch(/gadmin restart rank <N>` manually/);
     });
 
-    it("includes the service-management reference with correct systemctl commands", async () => {
+    it("advertises service-management with its hard rule and a mandatory trigger", async () => {
       const refs = await loadReferences();
       const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(prompt).toContain("systemctl start gpudb_host_manager");
-      expect(prompt).toContain("/opt/gpudb/core/bin/gpudb");
-      expect(prompt).toContain("There Is No Per-Rank Restart");
+      const row = prompt.split("\n").find((l) => l.startsWith("| service-management |"));
+      expect(row).toBeDefined();
+      // The card carries the correction itself, so an agent that never reads the
+      // document still cannot believe gadmin restarts a service.
+      expect(row).toMatch(/not a CLI/i);
+      expect(row).toMatch(/no per-rank restart/i);
+      expect(row).toMatch(/MANDATORY/);
+    });
+
+    it("gates the Remediation list on reading service-management", async () => {
+      const refs = await loadReferences();
+      const prompt = buildSystemPrompt(undefined, undefined, undefined, refs);
+      expect(prompt).toMatch(/Before you write this list/i);
+      expect(prompt).toContain("service-management");
     });
 
     it("documents cache clearing as unavailable", async () => {
@@ -875,13 +862,17 @@ describe("buildSystemPrompt", () => {
       expect(result).toContain("### Reference Knowledge");
     });
 
-    it("formats each reference with bold title heading", () => {
+    it("renders an on-demand reference as a card, not as a body", () => {
       const result = buildSystemPrompt(undefined, undefined, undefined, TEST_REFERENCES);
-      expect(result).toContain("**gpudb.conf Configuration Reference:**");
+      expect(result).toContain("| gpudb-conf |");
+      expect(result).not.toContain("**gpudb.conf Configuration Reference:**");
+      expect(result).not.toContain("Key Gotchas");
     });
 
-    it("includes reference body content", () => {
-      const result = buildSystemPrompt(undefined, undefined, undefined, TEST_REFERENCES);
+    it("renders an inline reference in full, in the original format", () => {
+      const inlined = TEST_REFERENCES.map((r) => ({ ...r, disclosure: "inline" as const }));
+      const result = buildSystemPrompt(undefined, undefined, undefined, inlined);
+      expect(result).toContain("**gpudb.conf Configuration Reference:**");
       expect(result).toContain("master config");
       expect(result).toContain("Key Gotchas");
     });
@@ -973,29 +964,41 @@ describe("buildSystemPrompt", () => {
       },
     ];
 
-    it("warns that ki_tiered_objects.id is not a numeric OID when references are loaded", () => {
-      const result = buildSystemPrompt(undefined, undefined, undefined, TIERED_OBJECTS_REFERENCES);
+    it("still reaches the prompt in full when the reference is marked inline", () => {
+      const inlined = TIERED_OBJECTS_REFERENCES.map((r) => ({
+        ...r,
+        disclosure: "inline" as const,
+      }));
+      const result = buildSystemPrompt(undefined, undefined, undefined, inlined);
       expect(result).toMatch(/ki_tiered_objects\.id.*NOT.*numeric.*OID/i);
-    });
-
-    it("recommends kinetica_resource_objects for per-table tier lookup when references are loaded", () => {
-      const result = buildSystemPrompt(undefined, undefined, undefined, TIERED_OBJECTS_REFERENCES);
       expect(result).toMatch(/kinetica_resource_objects.*table_names/i);
     });
 
-    it("ki_tiered_objects.id warning survives end-to-end via real references on disk", async () => {
+    // On-demand, the warning lives in the document rather than the prompt. That the
+    // real catalog-joins.md and rank-architecture.md still carry these warnings is
+    // asserted in src/knowledge/corpus.test.ts; here we assert the prompt tells the
+    // agent to go and read them, and when.
+    it("advertises the catalog references with join and coded-column triggers", async () => {
       const refs = await loadReferences();
       const result = buildSystemPrompt(undefined, undefined, undefined, refs);
-      // `s` flag — warnings wrap across lines in the reference markdown
-      expect(result).toMatch(/ki_tiered_objects\.id.*NOT.*numeric.*OID/is);
-      expect(result).toMatch(/kinetica_resource_objects.*table_names/is);
+      const row = (id: string) => result.split("\n").find((l) => l.startsWith(`| ${id} |`));
+      expect(row("catalog-joins")).toMatch(/before writing a join/i);
+      expect(row("catalog-enums")).toMatch(/coded/i);
+      expect(row("tiered-objects")).toMatch(/ki_tiered_objects/);
     });
 
-    it("rank 0 asymmetry warning survives end-to-end via real references on disk", async () => {
+    it("hooks the catalog reads to Round 2, where those queries are written", async () => {
       const refs = await loadReferences();
       const result = buildSystemPrompt(undefined, undefined, undefined, refs);
-      expect(result).toMatch(/rank 0.*(head|coordinator)/is);
-      expect(result).toMatch(/rank 0.*low.*(usage|idle).*normal/is);
+      expect(result).toMatch(/Before you query .*ki_tiered_objects/);
+    });
+
+    it("advertises rank-architecture as required before judging a per-rank metric", async () => {
+      const refs = await loadReferences();
+      const result = buildSystemPrompt(undefined, undefined, undefined, refs);
+      const row = result.split("\n").find((l) => l.startsWith("| rank-architecture |"));
+      expect(row).toMatch(/rank 0 is the head/i);
+      expect(row).toMatch(/before judging any per-rank metric/i);
     });
   });
 });

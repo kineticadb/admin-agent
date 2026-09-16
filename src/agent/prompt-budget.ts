@@ -42,8 +42,23 @@ const CHARS_PER_TOKEN = 4;
  *     further corpus addition would trip it, including ones we intend to make. 30_000
  *     makes room for the planned observability knowledge imports while still catching
  *     roughly a 50% corpus growth.
+ *   30_000 → 18_000 (2026-09-12) — the first LOWERING, and the only one so far that
+ *     reflects a design change rather than corpus growth. Progressive disclosure moved
+ *     every document body out of the prompt behind kinetica_knowledge_read, leaving a
+ *     card per document: the live "available" prompt fell 22,657 → 9,290, and the
+ *     measured MAXIMUM real configuration (bundle attached + stats stack reachable,
+ *     where support-bundle is inlined on purpose) is ~13,815. 18_000 is ~1.5x the
+ *     typical live-with-observability prompt (~11,487) and ~1.3x that maximum.
+ *
+ *     Deliberately NOT the 15_000 the implementation plan suggested: that figure was
+ *     derived before the attached-bundle case was measured, and 15_000 sits only ~8%
+ *     above a perfectly ordinary configuration. A tripwire that fires on the expected
+ *     state teaches the operator to ignore it, which is the one failure mode a tripwire
+ *     cannot survive. What this threshold now bounds is the CARD table plus the always-on
+ *     protocol text — so it fires if cards start carrying bodies, which is the regression
+ *     worth catching.
  */
-export const DEFAULT_PROMPT_BUDGET_TOKENS = 30_000;
+export const DEFAULT_PROMPT_BUDGET_TOKENS = 18_000;
 
 /** Result of measuring a prompt against a budget threshold. Immutable. */
 export type BudgetReport = {

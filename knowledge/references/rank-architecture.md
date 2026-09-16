@@ -2,6 +2,8 @@
 title: Kinetica Rank Architecture
 category: cluster-topology
 keywords: [ranks, rank-0, head, coordinator, worker, shards, metrics-interpretation, asymmetry]
+summary: "Rank 0 is the head/coordinator (minimal resources, no data tiers); worker ranks hold all the data. Shard ownership, and why queries are logged on rank 0 only."
+read_when: "Before judging any per-rank metric abnormal, and for crash forensics (which rank's log holds the SQL)."
 ---
 
 ## Overview

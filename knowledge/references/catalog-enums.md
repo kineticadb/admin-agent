@@ -13,6 +13,8 @@ keywords:
     priority,
     tiered_objects,
   ]
+summary: "Decoders for `ki_catalog` coded columns: obj_kind, shard_kind, persistence, partition_type, tier, priority."
+read_when: "When a `ki_catalog` query returns coded integer values you need to interpret."
 ---
 
 ## Overview

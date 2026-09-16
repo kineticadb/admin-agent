@@ -18,6 +18,8 @@ keywords:
     remediation,
     operator-instructions,
   ]
+summary: "The ONLY sanctioned start/stop/restart commands (systemctl units, the `/opt/gpudb/core/bin/gpudb` script), full-stack ordering, and the never-emit table. `gadmin` is a GUI, not a CLI; there is NO per-rank restart."
+read_when: "MANDATORY before any remediation step that starts, stops, or restarts anything."
 ---
 
 ## Scope

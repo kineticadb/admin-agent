@@ -155,6 +155,39 @@ vi.mock("../tools/bundle/index.js", () => {
   };
 });
 
+const { MOCK_KNOWLEDGE_TOOL_NAMES } = vi.hoisted(() => ({
+  MOCK_KNOWLEDGE_TOOL_NAMES: ["kinetica_knowledge_read"] as const,
+}));
+
+vi.mock("../tools/knowledge/index.js", () => {
+  // Same chainable registry stub as the bundle and observability mocks.
+  const makeRegistry = () => {
+    const reg = {
+      isReadOnlyTool: vi.fn().mockReturnValue(true),
+      registerReadOnlyTool: vi.fn(() => reg),
+      tools: new Set<string>(MOCK_KNOWLEDGE_TOOL_NAMES),
+    };
+    return reg;
+  };
+  return {
+    KNOWLEDGE_TOOL_NAMES: MOCK_KNOWLEDGE_TOOL_NAMES,
+    makeKnowledgeTools: vi
+      .fn()
+      .mockReturnValue(MOCK_KNOWLEDGE_TOOL_NAMES.map((name: string) => ({ name }))),
+    createKnowledgeRegistry: vi.fn(() => makeRegistry()),
+  };
+});
+
+vi.mock("../knowledge/KnowledgeStore.js", () => ({
+  createKnowledgeStore: vi.fn().mockReturnValue({
+    list: () => [],
+    get: () => undefined,
+    getSection: () => undefined,
+    inline: () => [],
+    onDemand: () => [],
+  }),
+}));
+
 const { mockCanUseTool } = vi.hoisted(() => ({
   mockCanUseTool: vi.fn(),
 }));
@@ -334,8 +367,10 @@ describe("explicit allowedTools", () => {
     await runAgent(session);
 
     const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
-    // Should have 15 diagnostic + 1 save_report + 1 alter_table_columns = 17 entries
-    expect(options.allowedTools).toHaveLength(27); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability
+    expect(options.allowedTools).toHaveLength(28); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability + knowledge_read
+    // Knowledge reads bypass the approval gate: the corpus is markdown this package
+    // ships, and a prompt in front of a mandatory read is a prompt the agent routes around.
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_knowledge_read");
     // All diagnostic tools must be prefixed with MCP server name
     for (const name of DIAGNOSTIC_TOOL_NAMES) {
       expect(options.allowedTools).toContain(`mcp__kinetica-diagnostics__${name}`);
@@ -496,7 +531,9 @@ describe("offline bundle mode", () => {
       "mcp__kinetica-diagnostics__kinetica_bundle_search_logs",
     );
     expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__save_report");
-    expect(options.allowedTools).toHaveLength(11); // 6 bundle + save_report + 4 observability
+    expect(options.allowedTools).toHaveLength(12); // 6 bundle + save_report + 4 observability + knowledge_read
+    // The corpus is capability-agnostic — a bundle-only session reads the same documents.
+    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_knowledge_read");
     // Observability tools are present in bundle-only mode on purpose: the stats stack
     // runs on a different host, so it commonly outlives the cluster the bundle came from.
     // No live diagnostic or mutation tools
@@ -1100,7 +1137,7 @@ describe("runAgent", () => {
     expect(callArgs.name).toBe("kinetica-diagnostics");
   });
 
-  it("creates MCP server with 30 tools (19 live + 6 bundle + 4 observability + save_report)", async () => {
+  it("creates MCP server with 31 tools (19 live + 6 bundle + 4 observability + knowledge_read + save_report)", async () => {
     const session = makeSession();
     await runAgent(session);
     const callArgs = mockCreateSdkMcpServer.mock.calls[0][0] as {
@@ -1108,7 +1145,7 @@ describe("runAgent", () => {
       version: string;
       tools: unknown[];
     };
-    expect(callArgs.tools).toHaveLength(30);
+    expect(callArgs.tools).toHaveLength(31);
   });
 
   it("calls makeMutationTools with the session", async () => {
@@ -1269,7 +1306,7 @@ describe("runAgent", () => {
     await runAgent(session);
     const options = mockQuery.mock.calls[0][0].options as { allowedTools: string[] };
     // 15 diagnostic + 1 save_report + 1 alter_table_columns = 17, no wildcards
-    expect(options.allowedTools).toHaveLength(27); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability
+    expect(options.allowedTools).toHaveLength(28); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability + knowledge_read
     expect(options.allowedTools.some((t: string) => t.includes("*"))).toBe(false);
     expect(options.allowedTools.some((t: string) => t.includes("mutation"))).toBe(false);
   });

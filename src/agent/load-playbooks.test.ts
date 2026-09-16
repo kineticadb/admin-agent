@@ -241,3 +241,141 @@ A`,
     expect(playbooks).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseFrontmatter — multi-line values and disclosure fields
+// ---------------------------------------------------------------------------
+
+describe("parseFrontmatter — continuation lines", () => {
+  it("parses a keywords array that Prettier reflowed onto multiple lines", () => {
+    // Prettier's exact output for an array wider than printWidth: 100.
+    const raw = `---
+title: ki_catalog Enum Values
+category: catalog-schema
+keywords:
+  [
+    ki_catalog,
+    enums,
+    obj_kind,
+    shard_kind,
+    persistence,
+  ]
+---
+
+Body`;
+
+    const result = parseFrontmatter(raw);
+    expect(result?.keywords).toEqual([
+      "ki_catalog",
+      "enums",
+      "obj_kind",
+      "shard_kind",
+      "persistence",
+    ]);
+  });
+
+  it("does not fold a following key into the previous value", () => {
+    const raw = `---
+title: Test
+keywords:
+  [
+    a,
+    b,
+  ]
+category: after-the-array
+---
+
+Body`;
+
+    const result = parseFrontmatter(raw);
+    expect(result?.keywords).toEqual(["a", "b"]);
+    expect(result?.category).toBe("after-the-array");
+  });
+});
+
+describe("parseFrontmatter — disclosure fields", () => {
+  it("parses summary, read_when and disclosure", () => {
+    const raw = `---
+title: Test
+summary: What the document covers.
+read_when: Before doing the thing.
+disclosure: inline
+---
+
+Body`;
+
+    const result = parseFrontmatter(raw);
+    expect(result?.summary).toBe("What the document covers.");
+    expect(result?.readWhen).toBe("Before doing the thing.");
+    expect(result?.disclosure).toBe("inline");
+  });
+
+  it("strips surrounding quotes so a value may contain a colon", () => {
+    const raw = `---
+title: Test
+summary: "Master config file: section index, tiers, gotchas."
+read_when: 'Before interpreting any conf.* property.'
+---
+
+Body`;
+
+    const result = parseFrontmatter(raw);
+    expect(result?.summary).toBe("Master config file: section index, tiers, gotchas.");
+    expect(result?.readWhen).toBe("Before interpreting any conf.* property.");
+  });
+
+  it("leaves disclosure undefined when the value is not a known literal", () => {
+    const raw = `---
+title: Test
+disclosure: nonsense
+---
+
+Body`;
+
+    expect(parseFrontmatter(raw)?.disclosure).toBeUndefined();
+  });
+
+  it("leaves summary, readWhen and disclosure undefined when absent", () => {
+    const raw = `---
+title: Test
+---
+
+Body`;
+
+    const result = parseFrontmatter(raw);
+    expect(result?.summary).toBeUndefined();
+    expect(result?.readWhen).toBeUndefined();
+    expect(result?.disclosure).toBeUndefined();
+  });
+});
+
+describe("loadPlaybooks — disclosure metadata", () => {
+  let metaDir: string;
+
+  beforeEach(async () => {
+    metaDir = await mkdtemp(join(tmpdir(), "playbooks-meta-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(metaDir, { recursive: true, force: true });
+  });
+
+  it("sets id from the filename stem and kind to 'playbook'", async () => {
+    await writeFile(
+      join(metaDir, "memory-pressure.md"),
+      `---
+title: Memory Pressure
+severity: warning
+---
+
+## Symptoms
+
+- Slow queries`,
+    );
+
+    const [playbook] = await loadPlaybooks(metaDir);
+    expect(playbook.id).toBe("memory-pressure");
+    expect(playbook.kind).toBe("playbook");
+    expect(playbook.severity).toBe("warning");
+  });
+});

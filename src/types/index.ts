@@ -76,22 +76,89 @@ export type ToolFailure = {
 // Discriminated union — ok field narrows the type at every call site
 export type ToolResult<T> = ToolSuccess<T> | ToolFailure;
 
-// Playbook — expert diagnostic knowledge loaded from knowledge/playbooks/*.md
-export type Playbook = {
+// ---------------------------------------------------------------------------
+// Knowledge corpus (knowledge/playbooks/*.md, knowledge/references/**/*.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a knowledge document reaches the model.
+ *
+ * "inline"    — rendered in full into the system prompt. Reserve this for policy the
+ *               agent must obey WITHOUT knowing to look it up (see mutation-safety.md).
+ * "on-demand" — rendered as a one-row card; the body arrives via kinetica_knowledge_read.
+ *
+ * Declared per document in frontmatter so the decision is a one-line, reversible
+ * corpus edit rather than a code change.
+ */
+export type Disclosure = "inline" | "on-demand";
+
+/** Which corpus a document came from. Set by the loader, which alone knows the directory. */
+export type KnowledgeKind = "playbook" | "reference" | "bundle-reference";
+
+/** One `##`/`###` section of a document body. Preamble text is headed "(intro)". */
+export type KnowledgeSection = {
+  readonly heading: string;
+  readonly body: string;
+};
+
+/**
+ * Fields shared by every knowledge document.
+ *
+ * The disclosure-related fields are OPTIONAL here and required on `KnowledgeDoc`:
+ * loaders fill in what only they know (`id`, `kind`), `normalizeDoc()` derives the
+ * rest, and hand-written test fixtures stay valid without restating any of it.
+ */
+type KnowledgeDocBase = {
   readonly title: string;
   readonly category: string;
-  readonly severity: string;
   readonly keywords: readonly string[];
   readonly body: string;
   readonly filename: string;
+  /** Filename stem, e.g. "gpudb-conf" — the id kinetica_knowledge_read takes. */
+  readonly id?: string;
+  readonly kind?: KnowledgeKind;
+  /** Frontmatter `summary` — one line stating WHAT the document covers. */
+  readonly summary?: string;
+  /** Frontmatter `read_when` — the unconditional trigger for reading it. */
+  readonly readWhen?: string;
+  /** Frontmatter `disclosure`; defaults to "on-demand" during normalization. */
+  readonly disclosure?: Disclosure;
+  /** Body split on `##`/`###` headings. Derived during normalization. */
+  readonly sections?: readonly KnowledgeSection[];
+};
+
+// Playbook — expert diagnostic knowledge loaded from knowledge/playbooks/*.md
+export type Playbook = KnowledgeDocBase & {
+  readonly severity: string;
 };
 
 // Reference — domain knowledge loaded from knowledge/references/*.md
 // Unlike Playbook, has no severity field — references are informational, not failure patterns.
-export type Reference = {
+export type Reference = KnowledgeDocBase;
+
+/**
+ * A normalized knowledge document — every derived field resolved.
+ *
+ * Produced by `normalizeDoc()` and served by the KnowledgeStore. The difference from
+ * `Playbook`/`Reference` is entirely in the type: nothing here is optional, so a
+ * renderer or tool never re-derives a default and the two can never disagree.
+ */
+export type KnowledgeDoc = {
+  readonly id: string;
+  readonly kind: KnowledgeKind;
   readonly title: string;
   readonly category: string;
   readonly keywords: readonly string[];
   readonly body: string;
   readonly filename: string;
+  /** Always non-empty — falls back to the title when nothing better exists. */
+  readonly summary: string;
+  /** "" when the document declares no trigger (inline documents need none). */
+  readonly readWhen: string;
+  readonly disclosure: Disclosure;
+  readonly sections: readonly KnowledgeSection[];
+  /** Playbooks only. */
+  readonly severity?: string;
+  /** Estimated body tokens — drives the card's section list and the oversize warning. */
+  readonly tokens: number;
 };

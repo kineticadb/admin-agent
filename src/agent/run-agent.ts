@@ -2,9 +2,10 @@
  * Agent loop orchestration for the Kinetica diagnostic agent.
  *
  * Responsibilities:
- * - Creates the in-process MCP server exposing the composed tool set — up to 28 in a live
- *   session (16 diagnostic + 4 mutation + alter_table_columns + 6 bundle + save_report),
- *   or 7 in bundle-only mode (bundle tools are always registered; live tools are not)
+ * - Creates the in-process MCP server exposing the composed tool set — up to 33 in a live
+ *   session (16 diagnostic + 4 mutation + alter_table_columns + 6 bundle + 4 observability +
+ *   knowledge_read + save_report), or 12 in bundle-only mode (bundle, observability and
+ *   knowledge tools are always registered; live tools are not)
  * - Uses explicit allowedTools list for diagnostic tools (mutation tools excluded for approval gate)
  * - Wires canUseTool callback for defense-in-depth approval on non-allowed tools
  * - Starts a streaming query with the system prompt and async-iterable prompt
@@ -57,6 +58,12 @@ import {
   createObservabilityRegistry,
   OBSERVABILITY_TOOL_NAMES,
 } from "../tools/observability/index.js";
+import {
+  makeKnowledgeTools,
+  createKnowledgeRegistry,
+  KNOWLEDGE_TOOL_NAMES,
+} from "../tools/knowledge/index.js";
+import { createKnowledgeStore } from "../knowledge/KnowledgeStore.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { createBundleHolder } from "../bundle/bundle-holder.js";
 import { createRegistry } from "../approval/registry.js";
@@ -225,6 +232,16 @@ export const BUNDLE_ALLOWED_TOOL_NAMES = [
  * against read-only APIs, so they bypass the approval gate like the diagnostic tools.
  */
 export const OBSERVABILITY_ALLOWED_TOOL_NAMES = OBSERVABILITY_TOOL_NAMES.map(
+  (name) => `mcp__${MCP_SERVER_NAME}__${name}`,
+);
+
+/**
+ * Allow-list for the knowledge tool. Read-only and in-memory — it serves markdown this
+ * package ships, so gating it behind the approval prompt would only teach the operator
+ * to approve reflexively, and a prompt the agent must answer before reading a mandatory
+ * document is a prompt it will route around.
+ */
+export const KNOWLEDGE_ALLOWED_TOOL_NAMES = KNOWLEDGE_TOOL_NAMES.map(
   (name) => `mcp__${MCP_SERVER_NAME}__${name}`,
 );
 
@@ -441,6 +458,12 @@ export async function runAgent(
     loadBundleReferences(),
   ]);
 
+  // One store over the whole corpus. `kind` (set by each loader) is what distinguishes
+  // the three lists downstream, so nothing after this point needs to know which loader
+  // a document came from. The store normalizes every document once: the prompt renderer
+  // and the knowledge tool then read identical resolved fields and cannot disagree.
+  const knowledgeStore = createKnowledgeStore([...playbooks, ...references, ...bundleReferences]);
+
   // Bundle tools bind to a holder (lazy ref) so a live session can attach a bundle
   // mid-conversation via kinetica_load_bundle. Seeded with the startup bundle, if any.
   const bundleHolder = createBundleHolder(bundleSource);
@@ -468,10 +491,10 @@ export async function runAgent(
         runOptions?.observability,
       );
 
-  // Token-budget tripwire: the whole knowledge corpus is front-loaded into the
-  // system prompt, so its cost grows with the corpus. Surface the size (DEBUG only)
-  // and warn unconditionally if it crosses the threshold — a cue to add keyword-based
-  // playbook selection before the prompt gets expensive.
+  // Token-budget tripwire. Document BODIES no longer live here — the prompt carries a
+  // card per document and kinetica_knowledge_read serves the rest — so what this now
+  // bounds is the card table plus the always-on protocol text. Surface the size (DEBUG
+  // only) and warn unconditionally if it crosses the threshold.
   const budget = checkPromptBudget(systemPrompt);
   if (process.env.DEBUG) {
     process.stderr.write(
@@ -482,7 +505,8 @@ export async function runAgent(
     process.stderr.write(
       pc.yellow(
         `⚠ system prompt is ~${budget.tokens} tokens (threshold ${budget.threshold}) — ` +
-          `knowledge corpus is getting expensive; consider keyword-based playbook selection.\n`,
+          `check for documents marked \`disclosure: inline\` that could be on-demand, and for ` +
+          `cards whose summaries have grown.\n`,
       ),
     );
   }
@@ -538,7 +562,16 @@ export async function runAgent(
         makeAlterTableColumnsToolWithDeps(session),
       ]
     : [];
-  const serverTools = [...liveTools, ...bundleTools, ...observabilityTools, saveReportTool];
+  // The knowledge tool is registered in every session: the corpus is capability-agnostic,
+  // and a document's card in the prompt is a promise that the read will work.
+  const knowledgeTools = makeKnowledgeTools(knowledgeStore);
+  const serverTools = [
+    ...liveTools,
+    ...bundleTools,
+    ...observabilityTools,
+    ...knowledgeTools,
+    saveReportTool,
+  ];
 
   // Allow-list = union (deduped — save_report appears in both base lists). Live
   // mutation tools are intentionally absent so they hit the approval gate.
@@ -547,6 +580,7 @@ export async function runAgent(
       ...(session ? ALLOWED_TOOL_NAMES : []),
       ...BUNDLE_ALLOWED_TOOL_NAMES,
       ...OBSERVABILITY_ALLOWED_TOOL_NAMES,
+      ...KNOWLEDGE_ALLOWED_TOOL_NAMES,
     ]),
   ];
 
@@ -557,7 +591,11 @@ export async function runAgent(
   // unioning the two factories' own tool sets keeps each rule in exactly one place, so a
   // tool added later that must NOT be read-only cannot be silently re-approved here.
   let registry = createRegistry(
-    new Set([...createBundleRegistry().tools, ...createObservabilityRegistry().tools]),
+    new Set([
+      ...createBundleRegistry().tools,
+      ...createObservabilityRegistry().tools,
+      ...createKnowledgeRegistry().tools,
+    ]),
   );
   if (session) {
     registry = DIAGNOSTIC_TOOL_NAMES.reduce(

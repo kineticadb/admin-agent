@@ -2,6 +2,8 @@
 title: Support Bundle Layout & Parsing
 category: bundle
 keywords: [bundle, sysinfo, gpudb_sysinfo, logs, rank, gpudb.conf, host-diagnostics, offline, loki]
+summary: "Bundle layout, the two per-rank log families and their clocks, raw and Loki-JSONL line formats, severity order (`min_severity=ERROR` drops UERR), crash-SQL forensics, off-shape bundles."
+read_when: "Immediately after a bundle is attached, before the first `kinetica_bundle_*` call."
 ---
 
 ### Log line format

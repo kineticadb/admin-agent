@@ -14,6 +14,8 @@ keywords:
     worker-restart,
     aggressiveness,
   ]
+summary: "Pre-execution checklist for rebalance, alter-configuration and DDL, plus the endpoints and properties never to propose."
+disclosure: inline
 ---
 
 ## Overview
@@ -46,9 +48,9 @@ BEFORE proposing any mutation:
   traversal concern.
 - Setting `flush_to_disk` — can trigger an expensive I/O storm.
 - Worker restart — no REST API exists in Kinetica 7.2, and Kinetica has
-  no per-rank restart command at all. Hand the operator an out-of-band
-  service command from `service-management.md` (restart the database on
-  the affected host) — never invent a `gadmin`-style rank command.
+  no per-rank restart command at all. Read `service-management` with
+  `kinetica_knowledge_read` and hand the operator an out-of-band command
+  from it — never invent a `gadmin`-style rank command.
 - Cache clearing — no safe API exists in Kinetica 7.2. Recommend
   query-side solutions (rewriting the query, adding an index, bumping
   resource group limits) instead of trying to clear caches.
@@ -112,9 +114,10 @@ BEFORE proposing any mutation:
   scratch.
 - Submit the full modified `config_string` (the entire file is
   replaced).
-- Changes require a database restart to take effect — give the operator
-  the exact commands from `service-management.md` (`systemctl stop gpudb`
-  then `systemctl start gpudb`, as root), not a bare "restart the
-  database".
+- Changes require a database restart to take effect. Read
+  `service-management` with `kinetica_knowledge_read` BEFORE writing that
+  step and give the operator the exact commands from it — this file does
+  not repeat them, deliberately. Never a bare "restart the database", and
+  never a `gadmin` command.
 - This tool contacts the host manager (port 9300), not the DB engine
   (port 9191).

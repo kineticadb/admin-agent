@@ -511,7 +511,7 @@
         </p>
         <div class="meta-row">
           <span class="chip">Claude Agent SDK</span>
-          <span class="chip">32 tools max</span>
+          <span class="chip">33 tools max</span>
           <span class="chip">2 nested loops</span>
           <span class="chip hot">pink = a human decides</span>
         </div>
@@ -600,10 +600,10 @@
               <rect class="box" x="370" y="60" width="360" height="72" rx="6"></rect>
               <text class="t-code" x="550" y="84" text-anchor="middle">buildSystemPrompt()</text>
               <text class="t-sub" x="550" y="102" text-anchor="middle">
-                6 playbooks · 12 references · 18 catalog schemas
+                18 knowledge cards · 18 catalog schemas
               </text>
               <text class="t-sub t-dim" x="550" y="119" text-anchor="middle">
-                ~22–24k tokens, built once, cached by the SDK
+                ~9–14k tokens, built once, cached by the SDK
               </text>
 
               <rect class="box-machine" x="370" y="155" width="360" height="64" rx="6"></rect>
@@ -861,7 +861,18 @@
             references, and bundle references — then builds one system prompt and checks its size.
             Bundle references load in <em>every</em> session, even one that never attaches a bundle,
             because the prompt is built once and a mid-session
-            <span class="m">kinetica_load_bundle</span> would otherwise drive those tools blind.
+            <span class="m">kinetica_load_bundle</span> arrives too late to change it.
+          </p>
+          <p>
+            What lands in that prompt is a <b>card</b> per knowledge document — its id, what it
+            covers, and the unconditional trigger for reading it — not the document. Bodies arrive
+            through <span class="m">kinetica_knowledge_read</span> when a trigger fires, which cut
+            the live prompt from ~22.7k tokens to ~9.3k. Two documents are exceptions, rendered in
+            full because the agent cannot be relied on to fetch them:
+            <span class="m">mutation-safety</span>, which is policy an agent that has not read it
+            does not know it should, and <span class="m">support-bundle</span> once a bundle is
+            actually attached, where a deferred read is pure latency. The saving is context
+            headroom, not spend — the prompt was already cached.
           </p>
           <p>
             One section of that prompt is conditional. The Observability Capability block renders
@@ -1081,8 +1092,8 @@
             <div>
               <b>The model reads a prompt it has seen before</b
               ><span>
-                The system prompt — protocol, tool catalog, playbooks, references, report template —
-                was built once at startup and is served from cache. A non-zero
+                The system prompt — protocol, tool catalog, knowledge cards, report template — was
+                built once at startup and is served from cache. A non-zero
                 <span class="m">cacheReadTokens</span> in the session summary is the proof.</span
               >
             </div>

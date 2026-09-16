@@ -2,6 +2,8 @@
 title: gpudb.conf Configuration Reference
 category: configuration
 keywords: [gpudb.conf, config, configuration, parameters, tuning, tiers, alerts]
+summary: "Master config file: section index, performance-critical parameters, how a change actually takes effect (file edit + restart), tiered-storage limits and watermarks, WAL, alert thresholds, gotchas."
+read_when: "Before interpreting any gpudb.conf or `conf.*` property, proposing a config change, or claiming a change took effect."
 ---
 
 ## Overview

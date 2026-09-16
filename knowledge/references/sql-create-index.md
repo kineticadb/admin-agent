@@ -2,6 +2,8 @@
 title: Kinetica CREATE INDEX / DROP INDEX Syntax
 category: sql-syntax
 keywords: [create-index, drop-index, index, ki_indexes, if-not-exists, explain, query-optimization]
+summary: "CREATE INDEX / DROP INDEX syntax, column index vs chunk-skip index, IF NOT EXISTS, and verifying an index with EXPLAIN."
+read_when: "Before proposing or creating an index."
 ---
 
 ## Overview

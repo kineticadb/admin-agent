@@ -79,7 +79,14 @@ export async function bundleLoad(
     ok: true,
     // Loading a bundle is SETUP, not an investigation. Do not auto-proceed — the
     // operator hasn't said what they want yet. End the turn and ask.
-    note: `Bundle attached. Do NOT start investigating yet — ask the operator what they want to investigate, then proceed.${missingNote}`,
+    //
+    // The read instruction rides on the tool RESULT, which is the most reliable
+    // retrieval channel this repo has found: it arrives at the exact moment the
+    // capability becomes real, rather than as a rule the agent read at startup and
+    // must remember to apply. In a live session support-bundle is only a card, so
+    // without this the bundle tools would run without knowing the log families,
+    // their two clocks, or that min_severity=ERROR silently drops UERR lines.
+    note: `Bundle attached. Do NOT start investigating yet — ask the operator what they want to investigate, then proceed. Before your first kinetica_bundle_* call, read the "support-bundle" document with kinetica_knowledge_read.${missingNote}`,
     data: {
       loaded: true,
       path,

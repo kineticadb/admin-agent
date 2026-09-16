@@ -55,9 +55,40 @@ describe("buildBundleSystemPrompt", () => {
       },
     ];
     const prompt = buildBundleSystemPrompt(undefined, playbooks, references);
+    // Playbooks and general references are on-demand here: the prompt carries a card
+    // for each and the body arrives through kinetica_knowledge_read. Bundle-scoped
+    // references are the exception and stay inline — see the test below.
     expect(prompt).toContain("Memory Pressure");
-    expect(prompt).toContain("BODY-MP");
     expect(prompt).toContain("gpudb.conf");
+    expect(prompt).toContain("kinetica_knowledge_read");
+    expect(prompt).not.toContain("BODY-MP");
+    expect(prompt).not.toContain("BODY-REF");
+  });
+
+  it("renders playbooks and general references in full when marked inline", () => {
+    const playbooks: Playbook[] = [
+      {
+        title: "Memory Pressure",
+        category: "memory",
+        severity: "high",
+        keywords: [],
+        body: "BODY-MP",
+        filename: "mp.md",
+        disclosure: "inline",
+      },
+    ];
+    const references: Reference[] = [
+      {
+        title: "gpudb.conf",
+        category: "config",
+        keywords: [],
+        body: "BODY-REF",
+        filename: "conf.md",
+        disclosure: "inline",
+      },
+    ];
+    const prompt = buildBundleSystemPrompt(undefined, playbooks, references);
+    expect(prompt).toContain("BODY-MP");
     expect(prompt).toContain("BODY-REF");
   });
 
@@ -137,6 +168,36 @@ describe("live system prompt — Support Bundle Capability section", () => {
     expect(p).toContain("SEVERITY-ORDER-UERR-NOTE");
   });
 
+  it("keeps bundle parsing knowledge to a CARD when a bundle is merely 'available'", () => {
+    // The mirror of the parity test above, and the reason the two differ: with a bundle
+    // attached the document is the session's subject, so a guaranteed read is pure
+    // latency; with none attached those same ~2.6k tokens are dead weight. The read is
+    // not lost — kinetica_load_bundle's result note instructs it at the moment of attach.
+    const bundleReferences: Reference[] = [
+      {
+        title: "Support Bundle Layout & Parsing",
+        category: "bundle",
+        keywords: [],
+        summary: "Bundle layout and log-line formats.",
+        readWhen: "Immediately after a bundle is attached.",
+        body: "SEVERITY-ORDER-UERR-NOTE",
+        filename: "support-bundle.md",
+      },
+    ];
+    const p = buildSystemPrompt(
+      "7.2.3.17",
+      undefined,
+      [],
+      [],
+      false,
+      "available",
+      bundleReferences,
+    );
+    expect(p).toContain("| support-bundle |");
+    expect(p).not.toContain("SEVERITY-ORDER-UERR-NOTE");
+    expect(p).toContain("read `support-bundle` with `kinetica_knowledge_read`");
+  });
+
   it("omits the bundle reference block when no bundle references are provided", () => {
     const p = buildSystemPrompt("7.2.3.17", undefined, [], [], false, "available", []);
     expect(p).not.toContain("Support Bundle Layout & Parsing");
@@ -150,5 +211,42 @@ describe("bundle prompt — one time axis rule", () => {
     expect(prompt).toMatch(/logs-local/);
     // No live connection here, so the live-alert clock must not be advertised.
     expect(prompt).not.toContain("kinetica_cluster_status");
+  });
+});
+
+describe("bundle-only prompt — reference sections are distinguishable", () => {
+  it("gives bundle parsing knowledge its own heading, separate from the card table", () => {
+    // The two blocks take different tiers here: bundle references inline (the bundle is
+    // the session's subject), general references as cards. One shared heading would read
+    // as the second superseding the first.
+    const bundleReferences: Reference[] = [
+      {
+        title: "Support Bundle Layout & Parsing",
+        category: "bundle",
+        keywords: [],
+        body: "BUNDLE-DOMAIN-KNOWLEDGE",
+        filename: "support-bundle.md",
+      },
+    ];
+    const references: Reference[] = [
+      {
+        title: "gpudb.conf",
+        category: "config",
+        keywords: [],
+        summary: "Master config file.",
+        readWhen: "Before interpreting any property.",
+        body: "BODY-REF",
+        filename: "gpudb-conf.md",
+      },
+    ];
+    const prompt = buildBundleSystemPrompt(undefined, [], references, bundleReferences);
+    expect(prompt).toContain("### Bundle Parsing Knowledge");
+    expect(prompt).toContain("BUNDLE-DOMAIN-KNOWLEDGE");
+    expect(prompt).toContain("### Reference Knowledge");
+    expect(prompt).toContain("| gpudb-conf |");
+    expect(prompt).not.toContain("BODY-REF");
+    expect(prompt.indexOf("### Bundle Parsing Knowledge")).toBeLessThan(
+      prompt.indexOf("### Reference Knowledge"),
+    );
   });
 });

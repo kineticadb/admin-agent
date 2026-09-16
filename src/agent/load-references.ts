@@ -27,15 +27,21 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import type { Reference } from "../types/index.js";
+import type { KnowledgeKind, Reference } from "../types/index.js";
 import { parseFrontmatter, extractBody, findPackageRoot } from "./load-playbooks.js";
 
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
-/** Read + parse every *.md reference in a single directory. Never throws. */
-async function loadReferencesFrom(dir: string): Promise<readonly Reference[]> {
+/**
+ * Read + parse every *.md reference in a single directory. Never throws.
+ *
+ * `kind` is a parameter rather than a constant because the directory is the only
+ * place that distinction exists — nothing inside a bundle reference marks it as one.
+ * `severity` is dropped: references are informational, not failure patterns.
+ */
+async function loadReferencesFrom(dir: string, kind: KnowledgeKind): Promise<readonly Reference[]> {
   try {
     if (!existsSync(dir)) return [];
 
@@ -52,8 +58,13 @@ async function loadReferencesFrom(dir: string): Promise<readonly Reference[]> {
         title: frontmatter.title,
         category: frontmatter.category,
         keywords: frontmatter.keywords,
+        summary: frontmatter.summary,
+        readWhen: frontmatter.readWhen,
+        disclosure: frontmatter.disclosure,
         body: extractBody(raw),
         filename: file,
+        id: file.replace(/\.md$/, ""),
+        kind,
       });
     }
 
@@ -75,7 +86,10 @@ async function loadReferencesFrom(dir: string): Promise<readonly Reference[]> {
  *   bundle-scoped references are excluded here. Never throws.
  */
 export function loadReferences(refsDir?: string): Promise<readonly Reference[]> {
-  return loadReferencesFrom(refsDir ?? join(findPackageRoot(__dirname), "knowledge", "references"));
+  return loadReferencesFrom(
+    refsDir ?? join(findPackageRoot(__dirname), "knowledge", "references"),
+    "reference",
+  );
 }
 
 /**
@@ -90,5 +104,6 @@ export function loadReferences(refsDir?: string): Promise<readonly Reference[]> 
 export function loadBundleReferences(refsDir?: string): Promise<readonly Reference[]> {
   return loadReferencesFrom(
     refsDir ?? join(findPackageRoot(__dirname), "knowledge", "references", "bundle"),
+    "bundle-reference",
   );
 }

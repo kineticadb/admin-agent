@@ -13,6 +13,8 @@ keywords:
     ki_tiered_objects,
     oid,
   ]
+summary: "Safe join paths between `ki_catalog` tables (objects, columns, partitions, query history, tiered objects), oid compatibility, and naming caveats."
+read_when: "Before writing a join across two or more `ki_catalog` tables."
 ---
 
 ## Overview

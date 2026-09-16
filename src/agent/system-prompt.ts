@@ -23,7 +23,11 @@ import { buildEvidenceChecklist } from "../tools/catalog.js";
 import { buildObservabilitySection } from "./observability-section.js";
 import { buildTimeAxisSection } from "./time-axis-section.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
-import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
+import {
+  buildFailurePatternsSection,
+  buildReferenceSection,
+  buildKnowledgeLibraryIntro,
+} from "./prompt-sections.js";
 import { REPORT_TEMPLATE } from "./report-template.js";
 
 // ---------------------------------------------------------------------------
@@ -128,7 +132,7 @@ export function buildSystemPrompt(
 4. Check ${t}license_status${t} and ${t}license_expiration${t} for license issues
 5. Check service statuses: ${t}ml_status${t}, ${t}query_planner_status${t}, ${t}reveal_status${t}, ${t}graph0_status${t}, ${t}text0_status${t}
 6. Report findings and clearly note that full diagnostics require the DB engine to be running
-7. Recommend the operator check: process logs (${t}/opt/gpudb/core/logs/${t}), service status (${t}service gpudb status${t} as root, or ${t}/opt/gpudb/core/bin/gpudb gpudb-status${t} as the gpudb user), disk space, and network connectivity. Use only the commands in the service-management reference — there is no ${t}gadmin${t} service-control CLI.
+7. Recommend the operator check: process logs (${t}/opt/gpudb/core/logs/${t}), service status (${t}service gpudb status${t} as root, or ${t}/opt/gpudb/core/bin/gpudb gpudb-status${t} as the gpudb user), disk space, and network connectivity. Use only the commands in ${t}service-management${t} — read it with ${t}kinetica_knowledge_read${t} before writing any of them; there is no ${t}gadmin${t} service-control CLI, and Kinetica has no per-rank restart.
 
 ### Report adjustments for degraded mode:
 - Evidence Gaps MUST include: "DB engine unreachable (port 9191) — all DB-dependent diagnostic tools unavailable"
@@ -153,13 +157,22 @@ ${
 - **The live system** (the live diagnostic tools) — current state, right now.`
     : `The operator can attach an offline Kinetica support bundle for analysis. If they ask to "analyze a support bundle" (or you need historical logs the live endpoints don't expose — Kinetica has no log endpoint), call ${t}kinetica_load_bundle${t} **with no path** — they will be shown an interactive directory picker to choose the bundle. Do NOT ask for the path in chat. The ${t}kinetica_bundle_*${t} tools then read its logs/config/host-diagnostics.
 
+Once it is attached, read ${t}support-bundle${t} with ${t}kinetica_knowledge_read${t} before the first ${t}kinetica_bundle_*${t} call — the log families, their two clocks, and the severity ordering are not guessable from the tool schemas.
+
 **Attaching a bundle is SETUP, not an investigation.** After ${t}kinetica_load_bundle${t} succeeds, do NOT start gathering evidence. Confirm what the operator wants to investigate first (briefly note the bundle is ready), then wait for their answer before calling any ${t}kinetica_bundle_*${t} tools. Do not waste turns investigating something they did not ask about.`
 }
 
 **Correlate the two:** the bundle tells you what HAPPENED (e.g. a crash, an error spike, config at capture time); the live tools tell you what is TRUE NOW (did it recover? is the config still drifted? did the issue recur?). Use the bundle for the historical narrative and the live tools to verify current state. Note in the report which findings came from the bundle (and its capture time) versus the live system.
 ${
   bundleReferences && bundleReferences.length > 0
-    ? `\n${buildReferenceSection(bundleReferences)}\n`
+    ? // Inline once a bundle is actually attached: it IS the session's subject, so a
+      // guaranteed read is pure latency. Merely "available" keeps it a card — 2.6k
+      // tokens of parsing detail is dead weight for a session that never attaches one,
+      // and kinetica_load_bundle's own result note tells the agent to read it on attach.
+      `\n${buildReferenceSection(bundleReferences, {
+        forceInline: bundleCapability === "attached",
+        heading: "### Bundle Parsing Knowledge",
+      })}\n`
     : ""
 }`;
 
@@ -202,6 +215,7 @@ Recommended Round 1 tools (in parallel):
 - ${t}kinetica_host_manager_status${t} — host manager cluster overview (version, license, per-rank/service status)
 - ${t}kinetica_get_metrics${t} — CPU/GPU/memory resource usage
 - ${t}kinetica_get_logs${t} (severity: ERROR, duration: 1h) — recent errors
+- ${t}kinetica_knowledge_read${t} — for every playbook card below whose symptoms match the reported issue. Issue these in the SAME batch as the sweep above; they cost nothing to run in parallel and they tell you what evidence the sweep should be looking for.
 
 **Round 2 — Targeted Drill-Down:**
 Based on Round 1 findings, perform targeted drill-down on specific hypotheses. Use additional tools as needed:
@@ -212,6 +226,8 @@ Based on Round 1 findings, perform targeted drill-down on specific hypotheses. U
 - ${t}kinetica_system_timing${t} — endpoint timing, slow API detection
 - ${t}kinetica_show_table${t} — table sizes, properties, column types
 
+Before you query ${t}ki_tiered_objects${t}, join two ${t}ki_catalog${t} tables, or interpret a coded column, read the reference the Knowledge Library names for it. These schemas do not match what other databases put behind the same names.
+
 **Round 3 — Confirmation Pass:**
 Confirm your primary hypothesis with additional evidence. Use ${t}kinetica_explain_query${t} for query plan issues. Run targeted SQL queries to validate root cause. Use ${t}kinetica_verify_db${t} when suspecting data integrity issues. Collect any final missing evidence.
 
@@ -220,6 +236,7 @@ After Round 3, you MUST write the report — even if uncertainty remains.
 ### Round 4 -- Mutation Proposal
 
 When diagnostic evidence supports a specific remediation:
+0. **Read first, then propose.** Before composing any mutation: ${t}sql-dialect${t} for ANY SQL, plus ${t}sql-alter-table${t} or ${t}sql-create-index${t} for that statement kind; ${t}gpudb-conf${t} for any property or config change. The Mutation Safety Rules below are already in these instructions — they are not the part you have to fetch.
 1. Explain your reasoning in the tool call (the approval panel will display it)
 2. Call the appropriate mutation tool:
    - ${t}kinetica_alter_table_columns${t} -- for batching 2+ column type/property changes on a SINGLE table
@@ -295,6 +312,14 @@ Kinetica-native column types and per-column properties (DICT, TEXT_SEARCH, COMPR
 not Kinetica-native types. Use ${t}ki_columns${t} only for structural metadata not available from
 ${t}kinetica_show_table${t} (e.g., ${t}is_shard_key${t}, ${t}is_primary_key${t}, disk compression stats).
 
+${buildKnowledgeLibraryIntro([
+  ...(playbooks ?? []),
+  ...(references ?? []),
+  // Bundle references only join the library when the bundle section actually renders
+  // them; with no bundle capability at all they are not in this prompt to be read.
+  ...(bundleCapability !== undefined ? (bundleReferences ?? []) : []),
+])}
+
 ${buildFailurePatternsSection(playbooks)}
 
 ${buildReferenceSection(references)}
@@ -334,6 +359,9 @@ Every conclusion must reference specific evidence:
 3. If no verified columns exist for that table, fall back to \`SELECT * FROM ki_catalog.<table> LIMIT 10\`
 4. If the retry also fails, log the gap and continue
 
+**Unexpected tool or SQL errors:**
+Before retrying a call that failed in a way you did not anticipate — an unknown endpoint, an unsupported command, a missing table — read ${t}version-quirks-7.2${t}. Several such failures are known version behaviour, and a blind retry spends a round confirming it.
+
 **Other tool failures (non-recoverable):**
 - Note the gap and continue. Use this format:
   - "Cluster status: unavailable (HTTP status 503 — WMS unreachable)"
@@ -346,6 +374,8 @@ ${timeAxisSection}
 ---
 
 ## Fix Instructions
+
+**Before you write this list:** if any step starts, stops or restarts anything, read ${t}service-management${t} first — the sanctioned commands are not the ones most operators expect, ${t}gadmin${t} is a GUI rather than a service-control CLI, and there is no per-rank restart. If any step contains SQL, read ${t}sql-dialect${t}. Name the ids you read under Evidence Collected.
 
 Include specific, actionable remediation steps tied to your findings. Structure your actionable remediation as a numbered list:
 

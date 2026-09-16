@@ -23,7 +23,11 @@
  */
 
 import type { Playbook, Reference } from "../types/index.js";
-import { buildFailurePatternsSection, buildReferenceSection } from "./prompt-sections.js";
+import {
+  buildFailurePatternsSection,
+  buildReferenceSection,
+  buildKnowledgeLibraryIntro,
+} from "./prompt-sections.js";
 import { buildBundleEvidenceChecklist } from "../tools/bundle/catalog.js";
 import { buildObservabilitySection } from "./observability-section.js";
 import { buildTimeAxisSection } from "./time-axis-section.js";
@@ -77,7 +81,7 @@ Before gathering evidence, announce a brief 2-3 line plan: restate the issue, li
 
 ### Round 1 — Orient
 
-- ${t}kinetica_bundle_list_files${t} — **ALWAYS FIRST.** Learn the detected version, which ranks are present, what file kinds exist, and how many collections failed. Check ${t}layout_match${t}: if it is not ${t}canonical${t}, this bundle is off-shape (e.g. a logs-only dump) — read the ${t}layout_note${t}, treat any ${t}unknown_file_paths${t} as evidence to inspect by hand (open one with ${t}kinetica_bundle_read_sysinfo${t}), and trust ${t}ranks_present${t} over ${t}inferred_ranks_unconfirmed${t}. See the support-bundle reference ("When the bundle doesn't match the expected layout").
+- ${t}kinetica_bundle_list_files${t} — **ALWAYS FIRST.** Learn the detected version, which ranks are present, what file kinds exist, and how many collections failed. Check ${t}layout_match${t}: if it is not ${t}canonical${t}, this bundle is off-shape (e.g. a logs-only dump) — read the ${t}layout_note${t}, treat any ${t}unknown_file_paths${t} as evidence to inspect by hand (open one with ${t}kinetica_bundle_read_sysinfo${t}), and trust ${t}ranks_present${t} over ${t}inferred_ranks_unconfirmed${t}. See the Support Bundle Layout & Parsing reference below ("When the bundle doesn't match the expected layout") — its full text is already in these instructions.
 - ${t}kinetica_bundle_log_timeline${t} (min_severity: WARN) — get the incident shape: when did WARN/ERROR/FATAL spike, and on which rank?
 
 ### Round 2 — Drill Down
@@ -90,6 +94,8 @@ Based on the timeline, narrow in:
 
 - ${t}kinetica_bundle_read_config${t} — check gpudb.conf for misconfiguration / config-drift relevant to your hypothesis (tier limits, thread pools, ports, HA).
 - Re-search logs to confirm the root-cause sequence.
+
+Before you write a remediation step that starts, stops or restarts anything, read ${t}service-management${t} with ${t}kinetica_knowledge_read${t}. You cannot apply it here, but the operator will — and the sanctioned commands are not the ones most operators expect.
 
 After Round 3 you MUST write the report — even if uncertainty remains. There are no mutation or verification rounds in bundle mode: you recommend, you do not apply.
 
@@ -106,9 +112,21 @@ ${observabilitySection}
 
 ---
 
+${buildKnowledgeLibraryIntro([...(playbooks ?? []), ...(references ?? [])])}
+
 ${buildFailurePatternsSection(playbooks)}
 
-${buildReferenceSection([...(bundleReferences ?? []), ...(references ?? [])])}
+${
+  // The bundle references stay INLINE here: the bundle is this session's entire
+  // subject, every tool call depends on knowing the log families and their clocks,
+  // and a read the agent is certain to need is a read not worth deferring.
+  buildReferenceSection(bundleReferences, {
+    forceInline: true,
+    heading: "### Bundle Parsing Knowledge",
+  })
+}
+
+${buildReferenceSection(references)}
 
 ---
 
