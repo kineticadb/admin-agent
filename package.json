@@ -32,7 +32,7 @@
     "README.md"
   ],
   "bin": {
-    "admin-agent": "./dist/admin-agent.js"
+    "admin-agent": "dist/admin-agent.js"
   },
   "publishConfig": {
     "access": "public"
