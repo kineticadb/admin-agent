@@ -51,6 +51,9 @@ import {
   ALTER_TABLE_COLUMNS_TOOL_NAME,
 } from "../tools/index.js";
 import { makeSaveReportTool } from "../report/save-report.js";
+import { makeConfirmSaveReportTool } from "../report/confirm-save-report.js";
+import { createSaveConsent } from "../report/save-consent.js";
+import { promptSaveReport } from "../cli/confirm-save.js";
 import { buildBundleSystemPrompt } from "./bundle-system-prompt.js";
 import { makeBundleTools, createBundleRegistry } from "../tools/bundle/index.js";
 import {
@@ -410,10 +413,13 @@ export function buildApprovalRegistry(hasSession: boolean): Registry {
       ...createKnowledgeRegistry().tools,
     ]),
   );
-  // save_report writes only to reports/ and takes its consent conversationally
-  // (see the Post-Report Behavior prompt section), so it bypasses the prompt in
-  // every mode.
+  // save_report writes only to reports/, and gates itself on the consent token that
+  // confirm_save_report records (see report/save-consent.ts) — prompting here too
+  // would ask the operator twice for one save. confirm_save_report IS that question,
+  // so gating it would mean prompting for permission to ask a question. Both bypass
+  // in every mode.
   registry = registry.registerReadOnlyTool("save_report");
+  registry = registry.registerReadOnlyTool("confirm_save_report");
   if (hasSession) {
     registry = DIAGNOSTIC_TOOL_NAMES.reduce(
       (reg, name) => reg.registerReadOnlyTool(name),
@@ -537,9 +543,6 @@ export async function runAgent(
     );
   }
 
-  // The save_report tool is available in every session.
-  const saveReportTool = makeSaveReportTool();
-
   if (!session && !bundleSource) {
     throw new Error("runAgent requires a Kinetica session, a bundleSource, or both.");
   }
@@ -554,6 +557,21 @@ export async function runAgent(
     spinner.stop();
     return promptBundleDirectory();
   };
+
+  // Report-save consent. confirm_save_report asks the operator mid-turn and records
+  // the answer here; save_report takes it before writing, so no grant means no file.
+  // Both tools ship in every session. Pausing the spinner first is the same courtesy
+  // the bundle picker gets — an @inquirer prompt and a braille animation share a line.
+  const saveConsent = createSaveConsent();
+  const confirmSave = async (): Promise<boolean> => {
+    spinner.stop();
+    return promptSaveReport();
+  };
+  const confirmSaveReportTool = makeConfirmSaveReportTool({
+    consent: saveConsent,
+    confirm: confirmSave,
+  });
+  const saveReportTool = makeSaveReportTool({ consent: saveConsent, confirm: confirmSave });
 
   // Operator confirmation when the MODEL supplies an explicit bundle path: loading
   // indexes that directory and lets the bundle tools read files under it, so the
@@ -596,6 +614,7 @@ export async function runAgent(
     ...bundleTools,
     ...observabilityTools,
     ...knowledgeTools,
+    confirmSaveReportTool,
     saveReportTool,
   ];
 

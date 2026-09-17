@@ -198,34 +198,38 @@ test. A missing report is **still a FAIL and still exit 1**: saving on consent i
 behaviour worth verifying, and the report is the artifact three assertions examine. What
 changed is that the output now says which half passed.
 
-### Why the evals script an operator
+### Why the evals supply an operator
 
-Both system prompts gate saving behind a conversational turn (see "Post-Report Behavior"):
-present the report, ask "Would you like me to save this report to disk? (yes/no)", then
-**stop and wait**. That is deliberate — consent is obtained in conversation rather than in
-the `save_report` handler, so the question reaches the operator before the model spends a
-turn composing a large report.
+Saving is gated on operator consent (see "Post-Report Behavior" in both prompts), so an
+eval with nobody to consent cannot pass however well the agent behaves. Measured, back
+when the question was conversational: a run with 29 turns, 28 tool calls and 4 correct
+knowledge reads still reported `FAIL: Agent never called save_report` — the agent asked,
+ended its turn, and nobody answered.
 
-An eval that yields a single user message therefore cannot pass, no matter how well the
-agent behaves. Measured: a run with 29 turns, 28 tool calls and 4 correct knowledge reads
-still reported `FAIL: Agent never called save_report` — the agent asked, ended its turn,
-and nobody answered.
+Since 2026-09-16 the question is a `(Y/n)` widget the agent raises **mid-turn** via
+`confirm_save_report`, so the eval server must **register that tool** — the prompt
+instructs the model to call it, and a server without it points the instruction at
+nothing. Both evals build the real tool (never a stub, which could drift from the one
+prod ships) with an auto-approving operator:
 
-Supplying an operator takes **two** pieces, and the first attempt shipped only one.
+```ts
+makeConfirmSaveReportTool({ consent: createSaveConsent(), confirm: () => Promise.resolve(true) });
+```
 
-`scripted-operator.ts` supplies the missing half. It mirrors prod exactly, down to the
-primitive: `makeInteractivePrompt` in `run-agent.ts` awaits a `TurnGate` that the output
-loop opens on `stop_reason === "end_turn"`, and so does this. It carries two replies
-rather than one (an agent that ends a turn early would otherwise consume the only answer
-at the wrong moment) and stops as soon as the report is captured, so a spare reply never
-buys another billed turn.
+`scripted-operator.ts` remains as a fallback rather than the main path. Consent no longer
+needs a conversational turn, so the save normally lands before the first `end_turn` and
+the generator returns unused — but an agent that ends a turn for its own reasons before
+the report exists (announcing a plan, asking a clarifying question) would still stall the
+run. It mirrors prod exactly, down to the primitive: `makeInteractivePrompt` in
+`run-agent.ts` awaits a `TurnGate` that the output loop opens on
+`stop_reason === "end_turn"`, and so does this. It stops as soon as the report is
+captured, so a spare reply never buys another billed turn.
 
 `consumeTranscript()` in `transcript.ts` is the other half, and the subtler one. **A result
 message arrives at the end of each agent turn, not once per session** — `run-agent.ts`
 handles one and keeps iterating, opening its turn gate so the prompt generator "can exit
-cleanly". An eval that `break`s on the first result abandons the stream at precisely the
-moment the agent has asked whether to save: the operator's answer is yielded into a stream
-nobody is reading. Both evals had this bug, and it survived the first fix — the second
+cleanly". An eval that `break`s on the first result abandons the stream mid-conversation: anything
+the scripted operator yields afterwards goes into a stream nobody is reading. Both evals had this bug, and it survived the first fix — the second
 measured run still reported `FAIL: Agent never called save_report` at 30 turns with 6
 correct knowledge reads.
 
@@ -237,7 +241,7 @@ continued. Its absence is what hid this bug twice.
 ## Design choices
 
 - **Mock the Kinetica session, not the Anthropic API.** We want real model behavior — that's the whole point. `MockKineticaSession` in `mock-session.ts` returns canned Response objects shaped like real Kinetica wire format (`data_str` double-encoded envelope for port 9191, plain JSON for host manager on port 9300).
-- **Capture `save_report` instead of letting it write.** `capturing-save-report.ts` replaces the real disk-writing tool with an in-memory capture. Lets the model's prompted behavior ("call save_report at end of investigation") fire normally without creating stray files.
+- **Capture `save_report` instead of letting it write.** `capturing-save-report.ts` replaces the real disk-writing tool with an in-memory capture. Lets the model's prompted behavior ("call save_report at end of investigation") fire normally without creating stray files. Its companion `confirm_save_report` IS the real tool, with consent auto-granted — the question it asks is the behaviour under test, so only the disk write is doubled.
 - **Structural regex checks, not LLM-as-judge.** For "does the report have the right shape?" we pin the invariants with pattern matches in `report-assertions.ts`. Save LLM-as-judge for fuzzier questions like "is the root cause plausible?".
 - **Auto-allow all tools.** The approval gate is exercised by unit tests (`src/approval/*.test.ts`); the eval skips it to keep runs non-interactive and reproducible.
 

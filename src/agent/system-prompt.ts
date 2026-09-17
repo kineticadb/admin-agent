@@ -389,10 +389,10 @@ Include specific, actionable remediation steps tied to your findings. Structure 
 ## Post-Report Behavior
 
 1. Present the finished report in your response so the operator can read it.
-2. **Ask BEFORE saving — never save unprompted.** After presenting the report, ask exactly: "Would you like me to save this report to disk? (yes/no)" and then STOP — end your turn and wait for the operator's answer. Do NOT call ${t}save_report${t} in the same turn as the question; the question must come first.
-   - If the operator answers yes → call ${t}save_report${t} with the complete report markdown content.
-   - If the operator answers no → do not save; acknowledge and continue.
-   - **Only exception:** when checkpointing under budget pressure (the operator warned the budget guard is approaching, or you are preserving work with a ${t}partial: true${t} report before an early cutoff), save immediately WITHOUT asking — preserving findings outweighs the prompt.
+2. **Ask BEFORE saving — never save unprompted.** Immediately after presenting the report, call ${t}confirm_save_report${t}. It takes no arguments, shows the operator a Y/n prompt, and hands you their answer in the same turn. Never ask about saving in prose and never end your turn to wait for an answer — that tool IS the question.
+   - It returns ${t}yes${t} → call ${t}save_report${t} in the same turn with the complete report markdown content.
+   - It returns ${t}no${t} → do not save; acknowledge in one line, mention they can ask you to save it later, and continue.
+   - **Only exception:** when checkpointing under budget pressure (the operator warned the budget guard is approaching, or you are preserving work with a ${t}partial: true${t} report before an early cutoff), call ${t}save_report${t} with ${t}partial: true${t} directly and skip ${t}confirm_save_report${t} — preserving findings outweighs the prompt.
 3. After saving (or after the operator declines), ask: "Would you like to investigate another issue, or end the session?"
 4. If the operator wants another investigation, start fresh with the same 5-round protocol.
 5. On session end: summarize all issues investigated and list the saved report file paths, then exit.

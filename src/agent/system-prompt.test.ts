@@ -334,16 +334,45 @@ describe("buildSystemPrompt", () => {
   });
 
   describe("post-report behavior", () => {
+    /**
+     * The Post-Report section only. Asserting against the whole prompt would let an
+     * unrelated mention of "partial" or "save_report" satisfy a check about the
+     * consent protocol -- the same trap the knowledge corpus tests moved away from.
+     */
+    const postReport = (): string => {
+      const prompt = buildSystemPrompt();
+      const start = prompt.indexOf("## Post-Report Behavior");
+      expect(start).toBeGreaterThan(-1);
+      const end = prompt.indexOf("\n---", start);
+      return prompt.slice(start, end === -1 ? undefined : end);
+    };
+
     it("instructs agent to call save_report tool at end of investigation", () => {
       const result = buildSystemPrompt();
       expect(result).toContain("save_report");
     });
 
-    it("instructs agent to ask the operator BEFORE saving the report", () => {
-      const result = buildSystemPrompt();
-      // The ask must precede the save: the prompt mandates a yes/no question and
-      // ending the turn before save_report is called.
-      expect(result).toMatch(/ask BEFORE saving|save this report to disk\? \(yes\/no\)/i);
+    it("routes the save question through confirm_save_report", () => {
+      expect(postReport()).toContain("confirm_save_report");
+    });
+
+    it("forbids asking about saving in prose", () => {
+      // The widget is only a widget if the model stops asking in text. Two failure
+      // modes to close: asking in prose, and ending the turn to wait for the answer.
+      expect(postReport()).toMatch(/never ask .{0,40}in prose|do not ask .{0,40}in prose/i);
+      expect(postReport()).toMatch(/never end your turn|do not end your turn/i);
+    });
+
+    it("keeps the partial-checkpoint exception, which needs no confirmation", () => {
+      const section = postReport();
+      expect(section).toMatch(/partial/i);
+      expect(section).toMatch(/budget/i);
+    });
+
+    it("no longer tells the agent to ask a yes/no question and stop", () => {
+      const section = postReport();
+      expect(section).not.toMatch(/\(yes\/no\)/i);
+      expect(section).not.toMatch(/wait for the operator's answer/i);
     });
 
     it("instructs agent to ask about next issue or end session after report", () => {

@@ -324,7 +324,7 @@ The `--bundle` flag points the agent at an **extracted** support-bundle director
 
 ## Tools
 
-33 tools organized into categories: **22 live tools** (used when connected to a running instance), **6 offline bundle-analysis tools** (used against an extracted support bundle), **4 observability tools** (used when a Prometheus/Loki stats stack is reachable), and **`kinetica_knowledge_read`**, which serves the agent's own knowledge corpus on demand in every session. Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report, the agent asks the operator (in conversation) whether to save and waits for a yes — so `save_report` only writes once you've agreed.
+34 tools organized into categories: **23 live tools** (used when connected to a running instance), **6 offline bundle-analysis tools** (used against an extracted support bundle), **4 observability tools** (used when a Prometheus/Loki stats stack is reachable), and **`kinetica_knowledge_read`**, which serves the agent's own knowledge corpus on demand in every session. Diagnostic, SQL, and all bundle tools execute without approval — they are read-only. Mutation tools require explicit user confirmation via an interactive y/n/explain prompt. The batch column alter tool is self-approving via its own checklist + SQL preview flow. Before saving a report the agent raises a `Save this report to disk? (Y/n)` prompt in the terminal via `confirm_save_report`, and `save_report` refuses to write without that yes — so you press a key instead of typing an answer, and the agent never spends a turn waiting for one. A `partial: true` checkpoint under budget pressure saves without asking, and a non-interactive run assumes yes rather than hanging.
 
 ### System Health & Monitoring
 
@@ -408,9 +408,10 @@ Available against an extracted `gpudb_sysinfo` support bundle (see [Offline Bund
 
 ### Reporting
 
-| Tool          | Description                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------- |
-| `save_report` | Timestamped markdown report to `reports/` with credential scrubbing — agent asks before saving |
+| Tool                  | Description                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `confirm_save_report` | Asks the operator `Save this report to disk? (Y/n)` in the terminal and returns the answer to the agent in the same turn |
+| `save_report`         | Timestamped markdown report to `reports/` with credential scrubbing — refuses to write without a recorded yes            |
 
 ## Security
 

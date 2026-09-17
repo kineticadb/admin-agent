@@ -21,6 +21,8 @@ import {
 } from "../tools/index.js";
 import { createMockSession } from "./mock-session.js";
 import { makeCapturingSaveReportTool } from "./capturing-save-report.js";
+import { makeConfirmSaveReportTool } from "../report/confirm-save-report.js";
+import { createSaveConsent } from "../report/save-consent.js";
 import { makeKnowledgeTools } from "../tools/knowledge/index.js";
 import { createKnowledgeStore } from "../knowledge/KnowledgeStore.js";
 import { validateReportStructure } from "./report-assertions.js";
@@ -68,6 +70,14 @@ async function runEval(): Promise<number> {
       ...diagnosticTools,
       ...mutationTools,
       ...makeKnowledgeTools(knowledgeStore),
+      // The prompt tells the agent to ask via confirm_save_report, so the eval server
+      // must expose it — otherwise the instruction points at nothing and the run
+      // measures a protocol the model cannot follow. Real tool, scripted operator:
+      // consent is granted without a TTY, the same way a non-interactive run does it.
+      makeConfirmSaveReportTool({
+        consent: createSaveConsent(),
+        confirm: () => Promise.resolve(true),
+      }),
       capture.tool,
       alterTableColumnsTool,
     ],

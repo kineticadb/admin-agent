@@ -171,7 +171,7 @@ Provide specific, actionable remediation tied to your findings, as a numbered li
 ## Post-Report Behavior
 
 1. Present the finished report in your response so the operator can read it.
-2. **Ask BEFORE saving — never save unprompted.** After presenting the report, ask exactly: "Would you like me to save this report to disk? (yes/no)" and then STOP — end your turn and wait for the operator's answer. Do NOT call ${t}save_report${t} in the same turn as the question; the question must come first. Save only if they answer yes. (Exception: if checkpointing under budget pressure with a ${t}partial: true${t} report, save immediately without asking — preserving findings beats the prompt.)
+2. **Ask BEFORE saving — never save unprompted.** Immediately after presenting the report, call ${t}confirm_save_report${t}. It takes no arguments, shows the operator a Y/n prompt, and hands you their answer in the same turn. Never ask about saving in prose and never end your turn to wait for an answer — that tool IS the question. On ${t}yes${t}, call ${t}save_report${t} in the same turn with the complete report markdown; on ${t}no${t}, acknowledge in one line, mention they can ask you to save it later, and continue. (Exception: if checkpointing under budget pressure with a ${t}partial: true${t} report, call ${t}save_report${t} directly and skip the confirmation — preserving findings beats the prompt.)
 3. After saving (or after the operator declines), ask: "Would you like to investigate another issue in this bundle, or end the session?"
 4. On session end: summarize issues investigated and list saved report paths, then exit.
 

@@ -199,6 +199,10 @@ vi.mock("../report/save-report.js", () => ({
   makeSaveReportTool: vi.fn().mockReturnValue({ name: "save_report" }),
 }));
 
+vi.mock("../report/confirm-save-report.js", () => ({
+  makeConfirmSaveReportTool: vi.fn().mockReturnValue({ name: "confirm_save_report" }),
+}));
+
 const { mockHostManagerStatus, mockHostManagerAlerts } = vi.hoisted(() => ({
   mockHostManagerStatus: vi.fn().mockResolvedValue({
     ok: true,
@@ -1069,7 +1073,7 @@ describe("runAgent", () => {
     expect(callArgs.name).toBe("kinetica-diagnostics");
   });
 
-  it("creates MCP server with 31 tools (19 live + 6 bundle + 4 observability + knowledge_read + save_report)", async () => {
+  it("creates MCP server with 32 tools (19 live + 6 bundle + 4 observability + knowledge_read + save_report + confirm_save_report)", async () => {
     const session = makeSession();
     await runAgent(session);
     const callArgs = mockCreateSdkMcpServer.mock.calls[0][0] as {
@@ -1077,7 +1081,7 @@ describe("runAgent", () => {
       version: string;
       tools: unknown[];
     };
-    expect(callArgs.tools).toHaveLength(31);
+    expect(callArgs.tools).toHaveLength(32);
   });
 
   it("calls makeMutationTools with the session", async () => {

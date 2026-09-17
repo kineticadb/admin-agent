@@ -70,6 +70,10 @@ describe("read-only tools are approved without prompting", () => {
   const readOnly = [
     ...DIAGNOSTIC_TOOL_NAMES,
     "save_report",
+    // confirm_save_report IS the operator's save question. Gating it would prompt
+    // for permission to ask a question, and save_report gates itself on the consent
+    // token that answer records (report/save-consent.ts).
+    "confirm_save_report",
     "kinetica_knowledge_read",
     ALTER_TABLE_COLUMNS_TOOL_NAME,
   ];

@@ -1,20 +1,22 @@
 /**
  * A scripted operator for the evals — the missing half of the conversation.
  *
- * Both prompts gate saving behind a conversational turn (system-prompt.ts, "Post-Report
- * Behavior"): present the report, ask "Would you like me to save this report to disk?
- * (yes/no)", then STOP and wait. That is deliberate — consent to save is obtained
- * conversationally rather than in the handler, so the question reaches the operator
- * before the model spends a turn composing a large report.
+ * Saving used to require one: both prompts told the agent to ask "save this report to
+ * disk? (yes/no)", end its turn, and wait. An eval that yields ONE user message could
+ * not pass, however well the agent behaved — measured, a run with 29 turns, 28 tool
+ * calls and 4 correct knowledge reads still reported "FAIL: Agent never called
+ * save_report", because nobody was there to say yes.
  *
- * An eval that yields ONE user message therefore cannot pass, however well the agent
- * behaves: it investigates, asks, ends its turn, and nobody answers. Measured — a run
- * with 29 turns, 28 tool calls and 4 correct knowledge reads still reported
- * "FAIL: Agent never called save_report", because there was no operator to say yes.
+ * Since 2026-09-16 the question is a Y/n widget the agent raises MID-TURN via
+ * confirm_save_report, and the evals register that tool with an auto-approving
+ * operator. The save therefore lands before the first end_turn, `isDone()` fires, and
+ * this generator usually returns without spending a reply.
  *
- * This generator supplies one. It mirrors prod exactly, down to the synchronization
- * primitive: `makeInteractivePrompt` in run-agent.ts awaits a TurnGate that the output
- * loop opens on `stop_reason === "end_turn"`, and so does this.
+ * It is kept because the agent may still end a turn for its own reasons before the
+ * report exists — announcing a plan, or asking a clarifying question — and an
+ * unanswered turn stalls the run just as it did before. It mirrors prod exactly, down
+ * to the synchronization primitive: `makeInteractivePrompt` in run-agent.ts awaits a
+ * TurnGate that the output loop opens on `stop_reason === "end_turn"`, and so does this.
  */
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -25,9 +27,9 @@ import type { TurnGate } from "../agent/turn-gate.js";
 /**
  * The replies a scripted operator gives after the agent ends a turn.
  *
- * Two, not one: the agent may end a turn before the save question (announcing a plan,
- * say), which would otherwise consume the only answer at the wrong moment. Each is
- * phrased to read correctly either as an answer to "save? (yes/no)" or as a standing
+ * Now a fallback rather than the main path: consent arrives through the
+ * confirm_save_report widget mid-turn, so these are spent only when the agent ends a
+ * turn before the report exists. Each is phrased to read correctly as a standing
  * instruction, so a mistimed one is harmless.
  */
 export const SAVE_REPLIES: readonly string[] = [

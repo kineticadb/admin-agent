@@ -34,6 +34,39 @@ describe("buildBundleSystemPrompt", () => {
     expect(buildBundleSystemPrompt()).toContain("REPORT TEMPLATE");
   });
 
+  /**
+   * Both prompts carry the save-consent protocol, so both are pinned. Written inline
+   * in two builders, a shared rule drifts on the commit that adds it -- that is
+   * exactly what happened to the One Time Axis section (see CLAUDE.md, System Prompt),
+   * where two tests each pinned a different variant and locked the divergence in.
+   */
+  describe("post-report save consent", () => {
+    const postReport = (): string => {
+      const prompt = buildBundleSystemPrompt();
+      const start = prompt.indexOf("## Post-Report Behavior");
+      expect(start).toBeGreaterThan(-1);
+      const end = prompt.indexOf("\n---", start);
+      return prompt.slice(start, end === -1 ? undefined : end);
+    };
+
+    it("routes the save question through confirm_save_report", () => {
+      expect(postReport()).toContain("confirm_save_report");
+    });
+
+    it("forbids asking about saving in prose or ending the turn to wait", () => {
+      expect(postReport()).toMatch(/never ask .{0,40}in prose|do not ask .{0,40}in prose/i);
+      expect(postReport()).toMatch(/never end your turn|do not end your turn/i);
+    });
+
+    it("keeps the partial-checkpoint exception", () => {
+      expect(postReport()).toMatch(/partial/i);
+    });
+
+    it("no longer tells the agent to ask a yes/no question and stop", () => {
+      expect(postReport()).not.toMatch(/\(yes\/no\)/i);
+    });
+  });
+
   it("injects playbooks and references when provided", () => {
     const playbooks: Playbook[] = [
       {

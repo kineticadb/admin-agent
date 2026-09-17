@@ -639,7 +639,9 @@
                 4 observability — GET-only, no DB credentials
               </text>
               <rect class="row" x="386" y="404" width="328" height="26" rx="4"></rect>
-              <text class="t-mono" x="398" y="421">save_report — consent asked in chat</text>
+              <text class="t-mono" x="398" y="421">
+                save_report + confirm_save_report — Y/n widget
+              </text>
 
               <rect class="box" x="370" y="460" width="360" height="64" rx="6"></rect>
               <text class="t-code" x="550" y="486" text-anchor="middle">
@@ -975,6 +977,9 @@
               <text class="t-mono t-dim" x="885" y="111" text-anchor="middle">
                 alter_table_columns · save_report
               </text>
+              <text class="t-mono t-dim" x="885" y="127" text-anchor="middle">
+                confirm_save_report
+              </text>
 
               <rect class="box-hot" x="760" y="152" width="250" height="64" rx="6"></rect>
               <text class="t-title" x="885" y="175" text-anchor="middle">
@@ -1188,7 +1193,7 @@
             <svg
               viewBox="0 0 1080 300"
               role="img"
-              aria-label="Five investigation rounds run left to right into a report. Round 4 pauses for an approval panel and the report pauses for save consent. A dashed path skips from Round 3 straight to the report, and budget or context pressure can force a partial report at any round."
+              aria-label="Five investigation rounds run left to right into a report. Round 4 pauses for an approval panel and the report pauses for a Y/n save-consent prompt. A dashed path skips from Round 3 straight to the report, and budget or context pressure can force a partial report at any round."
             >
               <defs>
                 <marker
@@ -1283,7 +1288,7 @@
               <rect class="box-hot" x="873" y="214" width="180" height="52" rx="6"></rect>
               <text class="t-title" x="963" y="236" text-anchor="middle">save consent</text>
               <text class="t-mono t-hot" x="963" y="254" text-anchor="middle">
-                asked in chat first
+                Y / n widget, mid-turn
               </text>
 
               <rect
@@ -1304,10 +1309,11 @@
             </svg>
           </div>
           <figcaption>
-            <b>Figure 4 — the investigation protocol.</b> Saving is normally a conversational
-            question the agent must ask and then stop for. The dashed interrupt is the single
-            exception: under budget or context pressure a partial report is written unprompted,
-            because preserving findings beats the etiquette.
+            <b>Figure 4 — the investigation protocol.</b> Saving normally pauses for a
+            <code>(Y/n)</code> prompt the agent raises without ending its turn, and the handler
+            refuses to write without that yes. The dashed interrupt is the single exception: under
+            budget or context pressure a partial report is written unprompted, because preserving
+            findings beats the etiquette.
           </figcaption>
         </figure>
       </section>
@@ -1547,7 +1553,7 @@
       <footer>
         <span>admin-agent v0.3.0</span>
         <span>Claude Agent SDK</span>
-        <span>16 diagnostic · 5 mutation · 6 bundle · 4 observability · save_report</span>
+        <span>16 diagnostic · 5 mutation · 6 bundle · 4 observability · 2 report</span>
       </footer>
     </div>
   </body>
