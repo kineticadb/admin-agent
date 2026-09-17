@@ -26,6 +26,7 @@ import { createSaveConsent } from "../report/save-consent.js";
 import { makeKnowledgeTools } from "../tools/knowledge/index.js";
 import { createKnowledgeStore } from "../knowledge/KnowledgeStore.js";
 import { validateReportStructure } from "./report-assertions.js";
+import { askedBeforeSave, validateSaveConsent } from "./consent-assertions.js";
 import { scriptedOperator, SAVE_REPLIES } from "./scripted-operator.js";
 import { createTurnGate } from "../agent/turn-gate.js";
 import { consumeTranscript, diagnoseEmptyRun } from "./transcript.js";
@@ -183,17 +184,23 @@ async function runEval(): Promise<number> {
     turns: totalTurns,
     costUsd: totalCostUsd,
     toolCalls: calls.length,
+    askedFirst: askedBeforeSave(calls),
   });
 
-  const result = validateReportStructure(report);
-  if (result.passed) {
-    console.error("PASS: Report conforms to the template structure.");
+  const structure = validateReportStructure(report);
+  // The save had to be CONFIRMED, not merely performed: the capturing tool writes either
+  // way, so without this a run that skipped the widget passes indistinguishably.
+  const consent = validateSaveConsent(calls);
+  const errors = [...structure.errors, ...consent.errors];
+
+  if (errors.length === 0) {
+    console.error("PASS: Report conforms to the template structure, and the save was confirmed.");
     await preserveRunArtifact("[eval:report-format]", "report-format", report, runMeta("PASS"));
     return 0;
   }
 
-  console.error("FAIL: Report structure violations:");
-  for (const err of result.errors) {
+  console.error("FAIL:");
+  for (const err of errors) {
     console.error(`  - ${err}`);
   }
   await preserveRunArtifact("[eval:report-format]", "report-format", report, runMeta("FAIL"));

@@ -238,6 +238,29 @@ each eval, and both evals print **`Turn groups: N`** — the count of result mes
 is the direct evidence that the operator's reply was delivered and the conversation
 continued. Its absence is what hid this bug twice.
 
+### Asserting the ask, not just the save
+
+`consent-assertions.ts` checks that `confirm_save_report` was called **before** the first
+save that needed it, and the artifact frontmatter records the answer as `asked_first`.
+
+Both exist because a PASS cannot answer the question on its own. The capturing
+`save_report` writes whether or not the widget fired — and in production the real handler
+falls back to prompting inline — so a model that skipped the ask produces a green run that
+looks identical to one that asked. Measured 2026-09-16: four runs went green on the first
+attempt after the widget landed, and their artifacts could not distinguish the two paths,
+because the frontmatter recorded `tool_calls` as a **count**. The names were in hand the
+whole time: `transcript.ts` collects every `tool_use` block with its `name`.
+
+A `partial: true` save is exempt, because both prompts prescribe saving a budget-pressure
+checkpoint without confirmation — an assertion blind to that flag would fail the agent for
+following its instructions. `asked_first` is omitted entirely when no consent-requiring
+save happened, and recorded as `false` (never omitted) when one happened unasked, since
+`false` is the finding the field exists to surface.
+
+This is the same lesson as the eval it sits beside: **when a change replaces a guarantee
+with a trigger, assert the trigger, not just the outcome** — otherwise the assertion is
+satisfied by the fallback that exists precisely because the trigger might not fire.
+
 ## Design choices
 
 - **Mock the Kinetica session, not the Anthropic API.** We want real model behavior — that's the whole point. `MockKineticaSession` in `mock-session.ts` returns canned Response objects shaped like real Kinetica wire format (`data_str` double-encoded envelope for port 9191, plain JSON for host manager on port 9300).

@@ -36,6 +36,15 @@ export type EvalRunMeta = {
   readonly toolCalls?: number;
   /** Knowledge ids read, in call order. An EMPTY array is a finding, so it is recorded. */
   readonly knowledgeReads?: readonly string[];
+  /**
+   * Did `confirm_save_report` precede the save (see consent-assertions.ts)?
+   *
+   * Recorded because a PASS alone cannot answer it: the capturing save tool writes
+   * whether or not the widget fired, so without this the artifact leaves "was the
+   * consent path taken, or did it pass through the fallback?" unanswerable after the
+   * run's log has scrolled away. `undefined` means no consent-requiring save happened.
+   */
+  readonly askedFirst?: boolean;
 };
 
 /**
@@ -56,6 +65,8 @@ export function buildRunFrontmatter(scenarioId: string, meta: EvalRunMeta, now: 
   if (meta.knowledgeReads !== undefined) {
     lines.push(`knowledge_reads: [${meta.knowledgeReads.join(", ")}]`);
   }
+  // Explicitly not `if (meta.askedFirst)` — false is the finding, not an absent value.
+  if (meta.askedFirst !== undefined) lines.push(`asked_first: ${String(meta.askedFirst)}`);
   return `---\n${lines.join("\n")}\n---\n\n`;
 }
 

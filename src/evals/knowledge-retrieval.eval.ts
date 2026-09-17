@@ -39,6 +39,7 @@ import { makeCapturingSaveReportTool } from "./capturing-save-report.js";
 import { makeConfirmSaveReportTool } from "../report/confirm-save-report.js";
 import { createSaveConsent } from "../report/save-consent.js";
 import { validateReportStructure } from "./report-assertions.js";
+import { askedBeforeSave, validateSaveConsent } from "./consent-assertions.js";
 import {
   validateKnowledgeRetrieval,
   validateRetrievalCalls,
@@ -292,6 +293,7 @@ async function runScenario(scenario: Scenario, corpus: Corpus): Promise<number> 
     costUsd: totalCostUsd,
     toolCalls: calls.length,
     knowledgeReads: ids,
+    askedFirst: askedBeforeSave(calls),
   });
 
   const report = capture.getCapture();
@@ -308,7 +310,10 @@ async function runScenario(scenario: Scenario, corpus: Corpus): Promise<number> 
 
   const retrieval = validateKnowledgeRetrieval(calls, report, scenario.expectAnyOf);
   const structure = validateReportStructure(report);
-  const errors = [...retrieval.errors, ...structure.errors];
+  // The save had to be CONFIRMED, not merely performed: the capturing tool writes either
+  // way, so without this a run that skipped the widget passes indistinguishably.
+  const consent = validateSaveConsent(calls);
+  const errors = [...retrieval.errors, ...structure.errors, ...consent.errors];
 
   // A scenario written to exercise the service-management trigger must actually do so.
   // Assertion 3 is conditional, so a benign remediation passes it vacuously and leaves
@@ -326,7 +331,8 @@ async function runScenario(scenario: Scenario, corpus: Corpus): Promise<number> 
 
   if (errors.length === 0) {
     console.error(
-      `${tag} PASS: read the matching documents before reporting, and the report conforms.` +
+      `${tag} PASS: read the matching documents before reporting, the save was confirmed, ` +
+        `and the report conforms.` +
         (scenario.mustExerciseServiceTrigger
           ? " The service-management trigger fired and was honoured."
           : ""),

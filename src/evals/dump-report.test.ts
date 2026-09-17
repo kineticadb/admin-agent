@@ -61,11 +61,26 @@ describe("buildRunFrontmatter", () => {
     expect(fm).toContain("knowledge_reads: []");
   });
 
+  it("records whether the save was confirmed through the widget", () => {
+    expect(buildRunFrontmatter("x", { outcome: "PASS", askedFirst: true }, AT)).toContain(
+      "asked_first: true",
+    );
+  });
+
+  it("records a skipped ask as false rather than omitting it", () => {
+    // false is the finding this field exists to surface -- a green run whose consent
+    // widget never fired. Dropping it would make the artifact silent on exactly that.
+    expect(buildRunFrontmatter("x", { outcome: "PASS", askedFirst: false }, AT)).toContain(
+      "asked_first: false",
+    );
+  });
+
   it("omits fields the caller did not supply", () => {
     const fm = buildRunFrontmatter("x", PASS, AT);
     expect(fm).not.toContain("turns:");
     expect(fm).not.toContain("cost_usd:");
     expect(fm).not.toContain("knowledge_reads:");
+    expect(fm).not.toContain("asked_first:");
   });
 });
 
