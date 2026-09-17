@@ -34,7 +34,19 @@ const REASONING_FALLBACK =
  * @param isReadOnly - Predicate that returns true for tools that bypass approval
  * @returns A canUseTool-compatible callback function
  */
-export function createApprovalGate(isReadOnly: IsReadOnlyFn): CanUseTool {
+/**
+ * A canUseTool callback that always reaches a decision.
+ *
+ * SDK 0.3.x widened `CanUseTool` to return `PermissionResult | null`, where
+ * null means "defer to the SDK's own permission handling". This gate never
+ * defers — deciding is its entire purpose — so it declares the narrower
+ * return type. Covariance keeps it assignable to `CanUseTool`, so callers
+ * pass it to `query({ canUseTool })` unchanged while getting a
+ * non-nullable result.
+ */
+export type ApprovalGate = (...args: Parameters<CanUseTool>) => Promise<PermissionResult>;
+
+export function createApprovalGate(isReadOnly: IsReadOnlyFn): ApprovalGate {
   return async (toolName, toolInput, options): Promise<PermissionResult> => {
     // Allow-list check: read-only tools pass without prompting
     if (isReadOnly(toolName)) {

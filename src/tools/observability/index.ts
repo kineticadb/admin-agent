@@ -94,7 +94,7 @@ function makePromAlertsTool(client: ObservabilityClient | undefined) {
     PromAlertsSchema.shape,
     async (args: PromAlertsInput) =>
       text(await withClient(client, "kinetica_prom_alerts", (c) => promAlerts(c, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -105,7 +105,7 @@ function makeTierSnapshotTool(client: ObservabilityClient | undefined) {
     TierSnapshotSchema.shape,
     async (args: TierSnapshotInput) =>
       text(await withClient(client, "kinetica_tier_snapshot", (c) => tierSnapshot(c, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -116,7 +116,7 @@ function makePromQueryTool(client: ObservabilityClient | undefined) {
     PromQuerySchema.shape,
     async (args: PromQueryInput) =>
       text(await withClient(client, "kinetica_prom_query", (c) => promQuery(c, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -127,7 +127,7 @@ function makeLokiQueryTool(client: ObservabilityClient | undefined) {
     LokiQuerySchema.shape,
     async (args: LokiQueryInput) =>
       text(await withClient(client, "kinetica_loki_query", (c) => lokiQuery(c, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 

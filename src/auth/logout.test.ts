@@ -1,26 +1,26 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { execFile } from "child_process";
-import { logout } from "./logout.js";
+import { logout, binaryCandidates } from "./logout.js";
 
-vi.mock("child_process", () => ({
-  execFile: vi.fn(),
-}));
+const SDK = "@anthropic-ai/claude-agent-sdk";
 
+// Hoisted so the vi.mock factory below can read it without a TDZ error —
+// the factory runs while ./logout.js is imported, before module-level lets init.
+const h = vi.hoisted(() => ({ resolvable: new Set<string>() }));
+
+vi.mock("child_process", () => ({ execFile: vi.fn() }));
 vi.mock("node:module", () => ({
   createRequire: () => ({
-    resolve: () => "/mocked/sdk/sdk.mjs",
+    resolve: (spec: string): string => {
+      if (!h.resolvable.has(spec)) {
+        throw Object.assign(new Error(`Cannot find module '${spec}'`), {
+          code: "MODULE_NOT_FOUND",
+        });
+      }
+      return `/mocked/node_modules/${spec}`;
+    },
   }),
 }));
-
-vi.mock("node:path", async () => {
-  const actual = await vi.importActual<typeof import("node:path")>("node:path");
-  return {
-    ...actual,
-    default: { ...actual, dirname: () => "/mocked/sdk", join: actual.join },
-  };
-});
-
-// createRequire receives __filename (available in both CJS and tsx).
 
 const mockExecFile = vi.mocked(execFile);
 
@@ -45,19 +45,51 @@ function mockFailure(error: Error): void {
   }) as typeof execFile);
 }
 
-describe("logout", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
+describe("binaryCandidates", () => {
+  it("names the single platform package on darwin", () => {
+    expect(binaryCandidates("darwin", "arm64", false)).toEqual([`${SDK}-darwin-arm64/claude`]);
   });
 
-  it("calls claude auth logout", async () => {
+  it("appends .exe on win32", () => {
+    expect(binaryCandidates("win32", "x64", false)).toEqual([`${SDK}-win32-x64/claude.exe`]);
+  });
+
+  it("tries glibc before musl on a glibc linux host", () => {
+    expect(binaryCandidates("linux", "x64", false)).toEqual([
+      `${SDK}-linux-x64/claude`,
+      `${SDK}-linux-x64-musl/claude`,
+    ]);
+  });
+
+  it("tries musl first on a musl linux host", () => {
+    expect(binaryCandidates("linux", "arm64", true)).toEqual([
+      `${SDK}-linux-arm64-musl/claude`,
+      `${SDK}-linux-arm64/claude`,
+    ]);
+  });
+});
+
+describe("logout", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.resolvable.clear();
+    h.resolvable.add(`${SDK}-${process.platform}-${process.arch}/claude`);
+  });
+
+  it("executes the native binary directly, not via node", async () => {
     mockSuccess("Logged out.");
     await logout();
 
     expect(mockExecFile).toHaveBeenCalledWith(
-      process.execPath,
-      ["/mocked/sdk/cli.js", "auth", "logout"],
+      `/mocked/node_modules/${SDK}-${process.platform}-${process.arch}/claude`,
+      ["auth", "logout"],
       expect.any(Function),
+    );
+    // Regression guard: 0.3.x ships a native binary, not a JS entry point.
+    expect(mockExecFile).not.toHaveBeenCalledWith(
+      process.execPath,
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -107,5 +139,16 @@ describe("logout", () => {
       success: false,
       message: "Logout failed: unexpected string error",
     });
+  });
+
+  it("reports a clear failure when no platform package is installed", async () => {
+    h.resolvable.clear();
+    mockSuccess("should not run");
+
+    const result = await logout();
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Could not locate the Claude Code binary");
+    expect(mockExecFile).not.toHaveBeenCalled();
   });
 });

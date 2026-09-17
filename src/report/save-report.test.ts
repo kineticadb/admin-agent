@@ -130,8 +130,10 @@ describe("makeSaveReportTool", () => {
       const result = await toolDef.handler({ content: "## Report", partial: undefined }, {});
 
       expect(result.content).toHaveLength(1);
-      expect(result.content[0].type).toBe("text");
-      expect(result.content[0].text).toMatch(/^Report saved: .+\.md$/);
+      expect(result.content[0]).toMatchObject({
+        type: "text",
+        text: expect.stringMatching(/^Report saved: .+\.md$/),
+      });
     });
 
     it("prepends PARTIAL marker when partial=true", async () => {

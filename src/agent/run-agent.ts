@@ -52,21 +52,17 @@ import {
 } from "../tools/index.js";
 import { makeSaveReportTool } from "../report/save-report.js";
 import { buildBundleSystemPrompt } from "./bundle-system-prompt.js";
-import { makeBundleTools, createBundleRegistry, BUNDLE_TOOL_NAMES } from "../tools/bundle/index.js";
+import { makeBundleTools, createBundleRegistry } from "../tools/bundle/index.js";
 import {
   makeObservabilityTools,
   createObservabilityRegistry,
-  OBSERVABILITY_TOOL_NAMES,
 } from "../tools/observability/index.js";
-import {
-  makeKnowledgeTools,
-  createKnowledgeRegistry,
-  KNOWLEDGE_TOOL_NAMES,
-} from "../tools/knowledge/index.js";
+import { makeKnowledgeTools, createKnowledgeRegistry } from "../tools/knowledge/index.js";
 import { createKnowledgeStore } from "../knowledge/KnowledgeStore.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
 import { createBundleHolder } from "../bundle/bundle-holder.js";
 import { createRegistry } from "../approval/registry.js";
+import type { Registry } from "../approval/registry.js";
 import { promptBundleDirectory } from "../cli/pick-bundle-path.js";
 import type { BundleSource } from "../bundle/BundleSource.js";
 import { createApprovalGate } from "../approval/gate.js";
@@ -92,6 +88,29 @@ export const MCP_SERVER_NAME = "kinetica-diagnostics";
  * which is the boundary at which the per-investigation summary is printed.
  */
 const SAVE_REPORT_TOOL_NAME = `mcp__${MCP_SERVER_NAME}__save_report`;
+
+/** The prefix the SDK puts on every in-process MCP tool name. */
+const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
+
+/**
+ * Strips the MCP prefix so a tool name can be looked up in the approval registry.
+ *
+ * The SDK hands `canUseTool` the QUALIFIED name
+ * (`mcp__kinetica-diagnostics__kinetica_health_check`), while the registry is keyed
+ * on the BARE name the tool was declared with (`kinetica_health_check`). Without
+ * this, every registry lookup misses and `isReadOnlyTool` answers false for tools
+ * that plainly are read-only.
+ *
+ * That bug was invisible for as long as `allowedTools` listed the same tools,
+ * because the SDK auto-approved them before the callback ever ran — so the gate
+ * only ever saw mutation tools, which default-deny correctly either way. It would
+ * have surfaced the moment the allow-list was trimmed, as 16 approval prompts for
+ * read-only diagnostics. Deliberately NOT `formatToolName()`, which also strips
+ * `kinetica_` and rewrites underscores for display and would never match a key.
+ */
+export function unqualifyToolName(toolName: string): string {
+  return toolName.startsWith(MCP_TOOL_PREFIX) ? toolName.slice(MCP_TOOL_PREFIX.length) : toolName;
+}
 
 /**
  * True if an assistant message's content contains a tool_use block invoking save_report.
@@ -202,50 +221,6 @@ const LIVE_MAX_TURNS = 100;
 const BUNDLE_MAX_TURNS = 40;
 
 /**
- * Explicit allow-list for diagnostic + report + self-approving tools.
- * Mutation tools are intentionally excluded so they fall through to the
- * canUseTool callback (approval gate) for user confirmation.
- *
- * alter_table_columns is in the allow-list because it implements its own
- * two-step approval: interactive checklist + SQL preview with y/n confirmation.
- *
- * IMPORTANT: Do NOT use a wildcard like `mcp__${MCP_SERVER_NAME}__*` here —
- * that would auto-approve mutation tools and bypass the approval gate entirely.
- */
-export const ALLOWED_TOOL_NAMES = [
-  ...DIAGNOSTIC_TOOL_NAMES.map((name) => `mcp__${MCP_SERVER_NAME}__${name}`),
-  SAVE_REPORT_TOOL_NAME,
-  `mcp__${MCP_SERVER_NAME}__${ALTER_TABLE_COLUMNS_TOOL_NAME}`,
-];
-
-/**
- * Allow-list for offline bundle mode: the 6 read-only bundle tools + save_report.
- * No mutation/diagnostic live tools — they aren't even constructed in bundle mode.
- */
-export const BUNDLE_ALLOWED_TOOL_NAMES = [
-  ...BUNDLE_TOOL_NAMES.map((name) => `mcp__${MCP_SERVER_NAME}__${name}`),
-  SAVE_REPORT_TOOL_NAME,
-];
-
-/**
- * Allow-list for the observability tools. They are all unauthenticated HTTP GETs
- * against read-only APIs, so they bypass the approval gate like the diagnostic tools.
- */
-export const OBSERVABILITY_ALLOWED_TOOL_NAMES = OBSERVABILITY_TOOL_NAMES.map(
-  (name) => `mcp__${MCP_SERVER_NAME}__${name}`,
-);
-
-/**
- * Allow-list for the knowledge tool. Read-only and in-memory — it serves markdown this
- * package ships, so gating it behind the approval prompt would only teach the operator
- * to approve reflexively, and a prompt the agent must answer before reading a mandatory
- * document is a prompt it will route around.
- */
-export const KNOWLEDGE_ALLOWED_TOOL_NAMES = KNOWLEDGE_TOOL_NAMES.map(
-  (name) => `mcp__${MCP_SERVER_NAME}__${name}`,
-);
-
-/**
  * Explicit deny list — built-in tools the diagnostic agent should never use.
  * SDK docs: deny rules override everything including bypassPermissions.
  */
@@ -257,10 +232,19 @@ const DISALLOWED_TOOLS = ["Bash", "Edit", "Write", "MultiEdit"] as const;
  */
 const ERROR_LABELS: Readonly<Record<SDKAssistantMessageError, string>> = {
   authentication_failed: "Authentication failed — check your API key or re-run with --login",
+  oauth_org_not_allowed:
+    "Your Anthropic organization is not permitted to use this model — re-run with --login-org to pick another",
+  account_on_hold: "Anthropic account is on hold — check your account status",
+  verification_required:
+    "Anthropic account needs verification — complete it in the Anthropic console",
   billing_error: "Billing error — check your Anthropic account",
   rate_limit: "Rate limit exceeded",
-  server_error: "Anthropic API server error",
+  overloaded: "Anthropic API is overloaded — retry in a moment",
   invalid_request: "Invalid API request",
+  model_not_found: "Model not found — check the --model value",
+  server_error: "Anthropic API server error",
+  cloud_credential_error:
+    "Cloud provider credentials rejected — check your Bedrock/Vertex configuration",
   max_output_tokens: "Response exceeded maximum output length",
   unknown: "Unknown API error",
 };
@@ -400,6 +384,48 @@ export async function displayDegradedStatus(session: KineticaSession): Promise<v
 // ---------------------------------------------------------------------------
 // Main agent loop
 // ---------------------------------------------------------------------------
+
+/**
+ * Builds the read-only approval registry — the SINGLE declaration of which tools
+ * bypass the interactive prompt.
+ *
+ * Exported so the safety tests can exercise the real construction instead of a
+ * copy: an invariant checked against a reimplementation only proves the copy is
+ * consistent with itself.
+ *
+ * @param hasSession - true when a live Kinetica session exists, which is what makes
+ *   the live diagnostic tools and alter_table_columns present at all.
+ */
+export function buildApprovalRegistry(hasSession: boolean): Registry {
+  // Approval registry: every read-only tool that should bypass the gate. Bundle
+  // tools are all read-only; diagnostic tools too (only when a live session exists).
+  // Compose the exported factories rather than re-implementing either registration rule
+  // here. Reducing one tuple onto the other factory would just move the duplication;
+  // unioning the two factories' own tool sets keeps each rule in exactly one place, so a
+  // tool added later that must NOT be read-only cannot be silently re-approved here.
+  let registry = createRegistry(
+    new Set([
+      ...createBundleRegistry().tools,
+      ...createObservabilityRegistry().tools,
+      ...createKnowledgeRegistry().tools,
+    ]),
+  );
+  // save_report writes only to reports/ and takes its consent conversationally
+  // (see the Post-Report Behavior prompt section), so it bypasses the prompt in
+  // every mode.
+  registry = registry.registerReadOnlyTool("save_report");
+  if (hasSession) {
+    registry = DIAGNOSTIC_TOOL_NAMES.reduce(
+      (reg, name) => reg.registerReadOnlyTool(name),
+      registry,
+    );
+    // alter_table_columns MUTATES, but gates itself with an interactive column
+    // checklist plus a SQL preview the operator must confirm. Prompting here too
+    // would ask twice for one action, which is how approval becomes a reflex.
+    registry = registry.registerReadOnlyTool(ALTER_TABLE_COLUMNS_TOOL_NAME);
+  }
+  return registry;
+}
 
 /**
  * Runs the full Kinetica diagnostic agent session.
@@ -573,36 +599,16 @@ export async function runAgent(
     saveReportTool,
   ];
 
-  // Allow-list = union (deduped — save_report appears in both base lists). Live
-  // mutation tools are intentionally absent so they hit the approval gate.
-  const allowedTools = [
-    ...new Set([
-      ...(session ? ALLOWED_TOOL_NAMES : []),
-      ...BUNDLE_ALLOWED_TOOL_NAMES,
-      ...OBSERVABILITY_ALLOWED_TOOL_NAMES,
-      ...KNOWLEDGE_ALLOWED_TOOL_NAMES,
-    ]),
-  ];
+  // `allowedTools` is deliberately EMPTY: a bare entry there auto-approves the tool
+  // INSIDE the SDK before `canUseTool` runs (SDK 0.3.x reports this as
+  // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). That split the approval decision across two
+  // lists that could disagree — and they did, since the registry lookup was keyed on
+  // a different spelling (see unqualifyToolName). Routing every call through the gate
+  // makes the registry below the single declaration of what bypasses the prompt, and
+  // makes its default-deny a real backstop rather than dead code.
+  const allowedTools: string[] = [];
 
-  // Approval registry: every read-only tool that should bypass the gate. Bundle
-  // tools are all read-only; diagnostic tools too (only when a live session exists).
-  // Compose the exported factories rather than re-implementing either registration rule
-  // here. Reducing one tuple onto the other factory would just move the duplication;
-  // unioning the two factories' own tool sets keeps each rule in exactly one place, so a
-  // tool added later that must NOT be read-only cannot be silently re-approved here.
-  let registry = createRegistry(
-    new Set([
-      ...createBundleRegistry().tools,
-      ...createObservabilityRegistry().tools,
-      ...createKnowledgeRegistry().tools,
-    ]),
-  );
-  if (session) {
-    registry = DIAGNOSTIC_TOOL_NAMES.reduce(
-      (reg, name) => reg.registerReadOnlyTool(name),
-      registry,
-    );
-  }
+  const registry = buildApprovalRegistry(session !== undefined);
 
   // Live investigations can be long (diagnose + mutate + verify); bundle-only is bounded.
   const maxTurns = session ? LIVE_MAX_TURNS : BUNDLE_MAX_TURNS;
@@ -617,7 +623,9 @@ export async function runAgent(
   // Defense-in-depth: wire canUseTool callback for any tool NOT matched by wildcard.
   // Wrap the approval gate to stop the spinner before showing interactive prompts.
   // `registry` is the mode's read-only registry (diagnostic or bundle).
-  const approvalGate = createApprovalGate(registry.isReadOnlyTool);
+  const approvalGate = createApprovalGate((name) =>
+    registry.isReadOnlyTool(unqualifyToolName(name)),
+  );
   const canUseTool: typeof approvalGate = async (toolName, toolInput, options) => {
     spinner.stop();
     return approvalGate(toolName, toolInput, options);
@@ -756,8 +764,6 @@ export async function runAgent(
       if (message.type === "stream_event") {
         // Real-time streaming: write text deltas to stderr as they arrive.
         // Thinking deltas (type "thinking_delta") are naturally excluded.
-        // SDK event union types are narrowed at runtime but too loose for ESLint to prove safe.
-        /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
         const { event: evt } = message;
         if (evt.type === "content_block_delta" && evt.delta.type === "text_delta") {
           const text = evt.delta.text ?? "";
@@ -770,7 +776,6 @@ export async function runAgent(
             }
           }
         }
-        /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
       } else if (message.type === "assistant") {
         const assistantMsg = message;
         // Flush any buffered table lines or partial line from the aligner
@@ -787,7 +792,6 @@ export async function runAgent(
         // Running-cost estimate: accumulate this turn's usage (fromSdkUsage normalizes the
         // SDK's snake_case shape) and warn once at ~80% of the cap.
         if (budgetTracker) {
-          /* eslint-disable-next-line @typescript-eslint/no-unsafe-member-access */
           budgetTracker.add(fromSdkUsage(assistantMsg.message.usage), effectiveModel);
           if (budgetTracker.shouldWarn()) {
             spinner.stop();
@@ -803,17 +807,14 @@ export async function runAgent(
         }
         // Investigation boundary: note when the agent saves a report this run, so the
         // matching result message can print a per-investigation summary.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         if (contentCallsSaveReport(assistantMsg.message.content)) {
           reportSavedThisRun = true;
         }
         // Signal the generator to prompt the user after the agent finishes.
         // Only on end_turn — NOT tool_use (agent continues after tool calls).
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         if (assistantMsg.message.stop_reason === "end_turn") {
           spinner.stop();
           turnGate.open();
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         } else if (assistantMsg.message.stop_reason === "tool_use") {
           // Agent is calling tools — restart spinner for the execution gap
           spinner.start("Investigating");

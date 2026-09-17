@@ -46,7 +46,7 @@ export function makeKnowledgeTools(store: KnowledgeStore) {
             { type: "text" as const, text: renderKnowledgeResult(readKnowledge(store, args)) },
           ],
         }),
-      { annotations: { readOnly: true } },
+      { annotations: { readOnlyHint: true } },
     ),
   ];
 }

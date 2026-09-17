@@ -24,6 +24,7 @@ const isReadOnlyMock = (toolName: string): boolean => toolName.startsWith("read_
 
 const TOOL_USE_ID = "tu_test_001";
 const AGENT_ID = "agent_test";
+const REQUEST_ID = "req_test_001";
 
 function makeOptions(
   overrides: Partial<{
@@ -31,12 +32,14 @@ function makeOptions(
     decisionReason: string;
     toolUseID: string;
     agentID: string;
+    requestId: string;
   }> = {},
 ) {
   return {
     signal: new AbortController().signal,
     toolUseID: TOOL_USE_ID,
     agentID: AGENT_ID,
+    requestId: REQUEST_ID,
     ...overrides,
   };
 }

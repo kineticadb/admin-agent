@@ -22,11 +22,7 @@ import type { KineticaSession } from "../types/index.js";
 import { buildSystemPrompt } from "../agent/system-prompt.js";
 import { loadPlaybooks } from "../agent/load-playbooks.js";
 import { loadReferences, loadBundleReferences } from "../agent/load-references.js";
-import {
-  MCP_SERVER_NAME,
-  ALLOWED_TOOL_NAMES,
-  KNOWLEDGE_ALLOWED_TOOL_NAMES,
-} from "../agent/run-agent.js";
+import { MCP_SERVER_NAME } from "../agent/run-agent.js";
 import {
   makeDiagnosticTools,
   makeMutationTools,
@@ -188,7 +184,11 @@ async function runScenario(scenario: Scenario, corpus: Corpus): Promise<number> 
     ),
     options: {
       mcpServers: { [MCP_SERVER_NAME]: server },
-      allowedTools: [...ALLOWED_TOOL_NAMES, ...KNOWLEDGE_ALLOWED_TOOL_NAMES],
+      // No allowedTools: `autoAllow` below already approves everything, so listing
+      // them would only duplicate the decision — and a bare entry auto-approves
+      // inside the SDK before the callback runs (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED),
+      // which is exactly the shadowing prod now avoids. Routing through the callback
+      // keeps the eval's permission path the same shape as production's.
       disallowedTools: ["Bash", "Edit", "Write", "MultiEdit"],
       canUseTool: autoAllow,
       systemPrompt,

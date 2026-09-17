@@ -7,8 +7,8 @@
  *   makeMutationTools(session)   — returns array of 4 MCP tool objects for mutation tools
  *
  * Output pipeline applied in every handler: formatOutput(result.ok ? result.data : result) → truncateOutput
- * Diagnostic tools registered with { annotations: { readOnly: true } } annotation.
- * Mutation tools annotated with { destructive: true, readOnly: false } — triggers approval gate.
+ * Diagnostic tools registered with { annotations: { readOnlyHint: true } } annotation.
+ * Mutation tools annotated with { destructiveHint: true, readOnlyHint: false } — triggers approval gate.
  */
 
 import { tool } from "@anthropic-ai/claude-agent-sdk";
@@ -165,7 +165,7 @@ function makeAlterSystemPropertiesTool(session: KineticaSession) {
       logMutationAudit("kinetica_alter_system_properties", result, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { destructive: true, readOnly: false } },
+    { annotations: { destructiveHint: true, readOnlyHint: false } },
   );
 }
 
@@ -180,7 +180,7 @@ function makeExecuteMutationSqlTool(session: KineticaSession) {
       logMutationAudit("kinetica_execute_mutation_sql", result, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { destructive: true, readOnly: false } },
+    { annotations: { destructiveHint: true, readOnlyHint: false } },
   );
 }
 
@@ -195,7 +195,7 @@ function makeAdminRebalanceTool(session: KineticaSession) {
       logMutationAudit("kinetica_admin_rebalance", result, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { destructive: true, readOnly: false } },
+    { annotations: { destructiveHint: true, readOnlyHint: false } },
   );
 }
 
@@ -210,7 +210,7 @@ function makeAlterConfigurationTool(session: KineticaSession) {
       logMutationAudit("kinetica_alter_configuration", result, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { destructive: true, readOnly: false } },
+    { annotations: { destructiveHint: true, readOnlyHint: false } },
   );
 }
 
@@ -227,7 +227,7 @@ function makeHealthCheckTool(session: KineticaSession) {
       const result = await healthCheck(session);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -240,7 +240,7 @@ function makeGetMetricsTool(session: KineticaSession) {
       const result = await getMetrics(session, args.node_id);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -253,7 +253,7 @@ function makeClusterStatusTool(session: KineticaSession) {
       const result = await clusterStatus(session);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -266,7 +266,7 @@ function makeNodeDetailsTool(session: KineticaSession) {
       const result = await nodeDetails(session, args.node_id);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -280,7 +280,7 @@ function makeGetLogsTool(session: KineticaSession) {
       const result = await getLogs(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -294,7 +294,7 @@ function makeShowConfigurationTool(session: KineticaSession) {
       const result = await showConfiguration(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -308,7 +308,7 @@ function makeGetSystemPropertiesTool(session: KineticaSession) {
       const result = await getSystemProperties(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -329,7 +329,7 @@ function makeExecuteSqlTool(session: KineticaSession, catalogSchemas?: CatalogSc
       }
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -342,7 +342,7 @@ function makeExplainQueryTool(session: KineticaSession) {
       const result = await explainQuery(session, args.statement, args.limit);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -355,7 +355,7 @@ function makeSystemTimingTool(session: KineticaSession) {
       const result = await systemTiming(session);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -369,7 +369,7 @@ function makeResourceGroupsTool(session: KineticaSession) {
       const result = await getResourceGroups(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -383,7 +383,7 @@ function makeVerifyDbTool(session: KineticaSession) {
       const result = await verifyDb(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -397,7 +397,7 @@ function makeShowSecurityTool(session: KineticaSession) {
       const result = await showSecurity(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -411,7 +411,7 @@ function makeShowTableTool(session: KineticaSession) {
       const result = await showTable(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -425,7 +425,7 @@ function makeResourceObjectsTool(session: KineticaSession) {
       const result = await getResourceObjects(session, parsed);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -438,7 +438,7 @@ function makeHostManagerStatusTool(session: KineticaSession) {
       const result = await hostManagerStatus(session);
       return { content: [{ type: "text" as const, text: applyOutputPipeline(result) }] };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -504,7 +504,7 @@ export function makeMutationTools(session: KineticaSession) {
 /**
  * Returns the SdkMcpToolDefinition for kinetica_alter_table_columns.
  *
- * This tool is added to ALLOWED_TOOL_NAMES (bypasses the approval gate)
+ * This tool is registered read-only in buildApprovalRegistry() (the gate does not prompt)
  * because it implements its own two-step approval: interactive checklist
  * for column selection + SQL preview with y/n confirmation.
  */

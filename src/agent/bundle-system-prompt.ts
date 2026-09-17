@@ -32,7 +32,7 @@ import { buildBundleEvidenceChecklist } from "../tools/bundle/catalog.js";
 import { buildObservabilitySection } from "./observability-section.js";
 import { buildTimeAxisSection } from "./time-axis-section.js";
 import type { ObservabilityClient } from "../observability/ObservabilityClient.js";
-import { REPORT_TEMPLATE } from "./report-template.js";
+import { REPORT_TEMPLATE, REPORT_SECTION_ORDER } from "./report-template.js";
 
 export function buildBundleSystemPrompt(
   kineticaVersion?: string,
@@ -197,7 +197,9 @@ At the end of each investigation, generate a structured markdown report using th
     "```markdown\n" +
     REPORT_TEMPLATE +
     "```\n\n" +
-    `**CRITICAL:** Use this exact section order. The metadata table comes first. Summary before Remediation. Evidence Collected before Evidence Gaps.
+    `**CRITICAL:** Use this exact section order. The metadata table comes first. Summary before Remediation. Evidence Collected before Timeline before Evidence Gaps. EVERY section listed below is REQUIRED — emit all of them in this order, including any whose content is "None". Do NOT reorder, merge, or omit sections.
+
+**Section order:** ${REPORT_SECTION_ORDER}
 
 **Bundle-mode report notes:**
 - In the metadata, make clear this diagnosis is from an offline support bundle (note the node and detected version).

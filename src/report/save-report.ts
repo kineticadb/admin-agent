@@ -60,7 +60,7 @@ export function formatTimestamp(date: Date): string {
  * - Timestamped filename: kinetica-diag-YYYY-MM-DD-HHmmss.md (UTC)
  * - Optional partial marker when investigation was interrupted
  *
- * Annotated readOnly: true so the approval gate auto-approves this tool. Consent
+ * Annotated readOnlyHint: true so the approval gate auto-approves this tool. Consent
  * is obtained conversationally before the agent calls it (see module doc), so the
  * handler writes directly.
  *
@@ -101,6 +101,6 @@ export function makeSaveReportTool() {
         content: [{ type: "text" as const, text: `Report saved: ${filepath}` }],
       };
     },
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }

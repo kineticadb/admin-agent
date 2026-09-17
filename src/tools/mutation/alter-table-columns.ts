@@ -228,7 +228,7 @@ export type OutputPipelineDeps = {
 /**
  * Creates the SdkMcpToolDefinition for kinetica_alter_table_columns.
  *
- * This tool is added to ALLOWED_TOOL_NAMES (bypasses the SDK approval gate)
+ * This tool is registered read-only in buildApprovalRegistry() (the gate does not prompt)
  * because it implements its own two-step approval: checklist + SQL preview.
  *
  * @param session - Pre-authenticated Kinetica session
@@ -251,6 +251,6 @@ export function makeAlterTableColumnsTool(session: KineticaSession, deps: Output
         content: [{ type: "text" as const, text: deps.applyOutputPipeline(result) }],
       };
     },
-    { annotations: { destructive: true, readOnly: false } },
+    { annotations: { destructiveHint: true, readOnlyHint: false } },
   );
 }

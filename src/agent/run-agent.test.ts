@@ -226,7 +226,7 @@ import { input } from "@inquirer/prompts";
 import { buildSystemPrompt } from "./system-prompt.js";
 import { loadBundleReferences } from "./load-references.js";
 import { discoverCatalogSchemas } from "./discover-schemas.js";
-import { makeDiagnosticTools, makeMutationTools, DIAGNOSTIC_TOOL_NAMES } from "../tools/index.js";
+import { makeDiagnosticTools, makeMutationTools } from "../tools/index.js";
 import { createBundleRegistry } from "../tools/bundle/index.js";
 import { createObservabilityRegistry } from "../tools/observability/index.js";
 import { makeSaveReportTool } from "../report/save-report.js";
@@ -350,11 +350,19 @@ describe("MCP_SERVER_NAME", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Explicit allowedTools (diagnostic + save_report only, no mutation tools)
+// allowedTools stays EMPTY — the approval registry is the single allow-list
 // ---------------------------------------------------------------------------
 
-describe("explicit allowedTools", () => {
-  it("lists diagnostic and save_report tools explicitly (no wildcard)", async () => {
+describe("allowedTools is empty so every call reaches canUseTool", () => {
+  /**
+   * These assertions used to enumerate the allow-list. That list was a SECOND copy
+   * of the approval decision, applied inside the SDK before canUseTool ran, and it
+   * hid a real bug: the registry is keyed on bare names while the gate is handed
+   * qualified ones, so the gate's read-only path never matched. The decision now
+   * lives only in the registry; `approval-wiring.test.ts` asserts the behaviour
+   * (reads never prompt, writes always do) against that real composition.
+   */
+  async function runAndGetOptions(): Promise<{ allowedTools: string[]; canUseTool: unknown }> {
     const session = makeSession();
     const mockQueryFn = query as ReturnType<typeof vi.fn>;
     mockQueryFn.mockReturnValue(makeQueryResult([makeResultMsg()]));
@@ -366,65 +374,20 @@ describe("explicit allowedTools", () => {
 
     await runAgent(session);
 
-    const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
-    expect(options.allowedTools).toHaveLength(28); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability + knowledge_read
-    // Knowledge reads bypass the approval gate: the corpus is markdown this package
-    // ships, and a prompt in front of a mandatory read is a prompt the agent routes around.
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_knowledge_read");
-    // All diagnostic tools must be prefixed with MCP server name
-    for (const name of DIAGNOSTIC_TOOL_NAMES) {
-      expect(options.allowedTools).toContain(`mcp__kinetica-diagnostics__${name}`);
-    }
-    // save_report must be included
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__save_report");
-    // alter_table_columns must be included (self-approving via checklist)
-    expect(options.allowedTools).toContain(
-      "mcp__kinetica-diagnostics__kinetica_alter_table_columns",
-    );
+    return mockQueryFn.mock.calls[0][0].options as {
+      allowedTools: string[];
+      canUseTool: unknown;
+    };
+  }
+
+  it("passes no bare tool names, so the SDK auto-approves nothing", async () => {
+    const options = await runAndGetOptions();
+    expect(options.allowedTools).toEqual([]);
   });
 
-  it("does NOT include mutation tools in allowedTools", async () => {
-    const session = makeSession();
-    const mockQueryFn = query as ReturnType<typeof vi.fn>;
-    mockQueryFn.mockReturnValue(makeQueryResult([makeResultMsg()]));
-    const mockInputFn = input as ReturnType<typeof vi.fn>;
-    mockInputFn.mockReset();
-    mockInputFn.mockResolvedValueOnce("test issue").mockResolvedValueOnce("exit");
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(process, "once").mockImplementation(() => process);
-
-    await runAgent(session);
-
-    const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
-    // Mutation tools must NOT appear — they must go through canUseTool approval gate
-    expect(options.allowedTools).not.toContain(
-      "mcp__kinetica-diagnostics__kinetica_alter_system_properties",
-    );
-    expect(options.allowedTools).not.toContain(
-      "mcp__kinetica-diagnostics__kinetica_execute_mutation_sql",
-    );
-    expect(options.allowedTools).not.toContain(
-      "mcp__kinetica-diagnostics__kinetica_admin_rebalance",
-    );
-  });
-
-  it("does NOT use a wildcard pattern", async () => {
-    const session = makeSession();
-    const mockQueryFn = query as ReturnType<typeof vi.fn>;
-    mockQueryFn.mockReturnValue(makeQueryResult([makeResultMsg()]));
-    const mockInputFn = input as ReturnType<typeof vi.fn>;
-    mockInputFn.mockReset();
-    mockInputFn.mockResolvedValueOnce("test issue").mockResolvedValueOnce("exit");
-    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(process, "once").mockImplementation(() => process);
-
-    await runAgent(session);
-
-    const options = mockQueryFn.mock.calls[0][0].options as { allowedTools: string[] };
-    // No wildcards — each entry must be a fully-qualified tool name
-    for (const entry of options.allowedTools) {
-      expect(entry).not.toContain("*");
-    }
+  it("wires canUseTool, which is what actually decides", async () => {
+    const options = await runAndGetOptions();
+    expect(typeof options.canUseTool).toBe("function");
   });
 });
 
@@ -525,22 +488,8 @@ describe("offline bundle mode", () => {
       allowedTools: string[];
       maxTurns: number;
     };
-    // 5 bundle tools + save_report
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_bundle_list_files");
-    expect(options.allowedTools).toContain(
-      "mcp__kinetica-diagnostics__kinetica_bundle_search_logs",
-    );
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__save_report");
-    expect(options.allowedTools).toHaveLength(12); // 6 bundle + save_report + 4 observability + knowledge_read
-    // The corpus is capability-agnostic — a bundle-only session reads the same documents.
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_knowledge_read");
-    // Observability tools are present in bundle-only mode on purpose: the stats stack
-    // runs on a different host, so it commonly outlives the cluster the bundle came from.
-    // No live diagnostic or mutation tools
-    expect(options.allowedTools).not.toContain("mcp__kinetica-diagnostics__kinetica_health_check");
-    expect(options.allowedTools).not.toContain(
-      "mcp__kinetica-diagnostics__kinetica_admin_rebalance",
-    );
+    // Nothing is auto-approved inside the SDK; the bundle registry decides instead.
+    expect(options.allowedTools).toEqual([]);
   });
 
   it("lowers maxTurns and skips schema discovery in bundle mode", async () => {
@@ -580,26 +529,9 @@ describe("offline bundle mode", () => {
       maxTurns: number;
     };
     // Both tool families are allowed in one session.
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_health_check");
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_bundle_list_files");
-    expect(options.allowedTools).toContain("mcp__kinetica-diagnostics__kinetica_load_bundle");
-    // Live mutations still excluded (approval gate); live turn limit applies.
-    expect(options.allowedTools).not.toContain(
-      "mcp__kinetica-diagnostics__kinetica_admin_rebalance",
-    );
-    expect(options.maxTurns).toBe(100);
-    // A preloaded bundle marks the live prompt's capability section "attached"
-    // and injects the bundle-scoped references (7th arg) into that prompt.
-    expect(buildSystemPrompt).toHaveBeenCalledWith(
-      "7.2.3.17",
-      undefined,
-      [],
-      [],
-      false,
-      "attached",
-      [],
-      undefined,
-    );
+    // Tool AVAILABILITY is unchanged (both sets are registered on the MCP server);
+    // what changed is that approval is no longer duplicated here.
+    expect(options.allowedTools).toEqual([]);
   });
 });
 
@@ -1301,14 +1233,13 @@ describe("runAgent", () => {
     expect(createApprovalGate).toHaveBeenCalledOnce();
   });
 
-  it("calls query() with explicit allowedTools excluding mutation tools", async () => {
+  it("calls query() with an empty allowedTools so nothing is auto-approved", async () => {
     const session = makeSession();
     await runAgent(session);
     const options = mockQuery.mock.calls[0][0].options as { allowedTools: string[] };
-    // 15 diagnostic + 1 save_report + 1 alter_table_columns = 17, no wildcards
-    expect(options.allowedTools).toHaveLength(28); // 15 diagnostic + save_report + alter_table_columns + 6 bundle + 4 observability + knowledge_read
-    expect(options.allowedTools.some((t: string) => t.includes("*"))).toBe(false);
-    expect(options.allowedTools.some((t: string) => t.includes("mutation"))).toBe(false);
+    // Empty by design: a bare entry auto-approves inside the SDK before canUseTool
+    // runs, which would shadow the approval gate. See approval-wiring.test.ts.
+    expect(options.allowedTools).toEqual([]);
   });
 
   it("calls query() with disallowedTools blocking dangerous built-in tools", async () => {

@@ -28,7 +28,7 @@ import {
   buildReferenceSection,
   buildKnowledgeLibraryIntro,
 } from "./prompt-sections.js";
-import { REPORT_TEMPLATE } from "./report-template.js";
+import { REPORT_TEMPLATE, REPORT_SECTION_ORDER } from "./report-template.js";
 
 // ---------------------------------------------------------------------------
 // Diagnostic SQL section builder
@@ -443,9 +443,9 @@ At the end of each investigation, generate a structured markdown report using th
     "```markdown\n" +
     REPORT_TEMPLATE +
     "```\n\n" +
-    `**CRITICAL:** Use this exact section order. The metadata table comes first. Summary before Remediation. Evidence Collected before Evidence Gaps. Mutations Applied before Post-Remediation Verification. Do NOT reorder sections.
+    `**CRITICAL:** Use this exact section order. The metadata table comes first. Summary before Remediation. Evidence Collected before Timeline before Evidence Gaps. Mutations Applied before Post-Remediation Verification. EVERY section listed below is REQUIRED — emit all of them in this order, including any whose content is "None". Do NOT reorder, merge, or omit sections.
 
-**Section order:** Metadata -> Summary -> Remediation -> Root Cause Analysis -> Evidence Collected -> Evidence Gaps -> Mutations Applied -> Post-Remediation Verification
+**Section order:** ${REPORT_SECTION_ORDER}
 
 **Evidence Collected guidance:** Include only the key data points that led to your conclusion. No raw JSON dumps. No full log output. Extract the 3-10 most relevant findings.
 `

@@ -12,7 +12,7 @@
  * tools return a polite "no bundle loaded" failure.
  *
  * Every handler runs through the shared applyOutputPipeline (format → truncate),
- * the same contract as the live diagnostic tools, and is annotated readOnly:true.
+ * the same contract as the live diagnostic tools, and is annotated readOnlyHint:true.
  */
 
 import { tool } from "@anthropic-ai/claude-agent-sdk";
@@ -88,7 +88,7 @@ function makeLoadBundleTool(holder: BundleHolder, deps?: BundleToolDeps) {
       text(
         applyOutputPipeline(await bundleLoad(holder, args, deps?.promptForPath, deps?.confirmPath)),
       ),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -99,7 +99,7 @@ function makeListFilesTool(holder: BundleHolder) {
     BundleListFilesSchema.shape,
     async (args: { kind?: string }) =>
       text(await withSource(holder, (s) => bundleListFiles(s, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -109,7 +109,7 @@ function makeLogTimelineTool(holder: BundleHolder) {
     "Aggregate bundle log lines into per-time-bucket severity counts across ranks — the incident shape. Call this BEFORE search_logs to find WHEN errors spiked, then drill in with a tight time window. Defaults: min_severity=WARN, granularity=hour, core logs (all ranks AND the host manager). Narrow with rank=<r0|r1|…> (numeric ranks only) or host_manager=true for the host-manager log (a service, not a rank). Set include_components=true or component=<name> to include component logs. Note severity order is WARN < UERR < ERROR < FATAL, so min_severity=ERROR EXCLUDES UERR (user-error) lines — use UERR or WARN to include them. Reports timestamp_zone, and warns when the selected files mix clocks (rolling logs are host-local, Loki tails UTC).",
     BundleLogTimelineSchema.shape,
     async (args) => text(await withSource(holder, (s) => bundleLogTimeline(s, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -119,7 +119,7 @@ function makeSearchLogsTool(holder: BundleHolder) {
     "Search bundle logs for matching lines by regex (case-insensitive), min_severity, time window (from_ts/to_ts as 'YYYY-MM-DD HH:MM:SS.mmm'; a partial prefix like a timeline bucket label '2026-06-11 15' also works — it is widened to cover that whole period), and rank/host_manager/component. Streamed and bounded — the default 200-match cap is shared across all files; when capped, narrow the query (the total may be a lower bound). Defaults to core logs across all ranks AND the host manager; narrow with rank=<r0|r1|…> (numeric ranks only) or host_manager=true for the host-manager log (a service, not a rank); set component or include_components for component logs. Severity order is WARN < UERR < ERROR < FATAL, so min_severity=ERROR EXCLUDES UERR (user-error) lines. Reports timestamp_zone, adding a per-row zone column when the matches mix clocks.",
     BundleSearchLogsSchema.shape,
     async (args) => text(await withSource(holder, (s) => bundleSearchLogs(s, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -129,7 +129,7 @@ function makeReadConfigTool(holder: BundleHolder) {
     "Read gpudb.conf from the attached bundle (the real on-disk config). Optionally filter by `section` (exact, case-insensitive) and/or `key` (substring, case-insensitive). Interpolation references like ${gaia.host0.address} are returned verbatim.",
     BundleReadConfigSchema.shape,
     async (args) => text(await withSource(holder, (s) => bundleReadConfig(s, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 
@@ -140,7 +140,7 @@ function makeReadSysinfoTool(holder: BundleHolder) {
     BundleReadSysinfoSchema.shape,
     async (args: { name: string }) =>
       text(await withSource(holder, (s) => bundleReadSysinfo(s, args))),
-    { annotations: { readOnly: true } },
+    { annotations: { readOnlyHint: true } },
   );
 }
 

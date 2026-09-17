@@ -131,12 +131,15 @@ describe("knowledge tool registration", () => {
 
   it("annotates the tool read-only", () => {
     const [tool] = makeKnowledgeTools(store);
-    expect(tool.annotations).toMatchObject({ readOnly: true });
+    expect(tool.annotations).toMatchObject({ readOnlyHint: true });
   });
 
   it("returns the document through the tool handler", async () => {
     const [tool] = makeKnowledgeTools(store);
     const out = await tool.handler({ id: "memory-pressure", section: undefined }, {});
-    expect(out.content[0].text).toContain("Raise the tier limit.");
+    expect(out.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("Raise the tier limit."),
+    });
   });
 });
